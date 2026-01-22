@@ -278,7 +278,9 @@ function PortalApp() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Смарт-панель
-  const [smartPanelMode, setSmartPanelMode] = useState('groups'); // 'groups' | 'brands'
+  const [smartPanelMode, setSmartPanelMode] = useState(() => {
+    try { return localStorage.getItem('portal_smartPanelMode') || 'groups'; } catch { return 'groups'; }
+  }); // 'groups' | 'brands'
   const [selectedGroup, setSelectedGroup] = useState(null); // groupId
   const [selectedBrand, setSelectedBrand] = useState(null); // brandName
   const [expandedGroup, setExpandedGroup] = useState(null); // groupId або null
@@ -290,9 +292,52 @@ function PortalApp() {
   const [categories, setCategories] = useState([]); // [{id, name, slug, order}]
 
   // Фільтри для відображення товарів (клієнтська дорізка)
-  const [hideZeroStock, setHideZeroStock] = useState(false);
-  const [hidePartnerOffers, setHidePartnerOffers] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
+  const [hideZeroStock, setHideZeroStock] = useState(() => {
+    try { return localStorage.getItem('portal_hideZeroStock') === 'true'; } catch { return false; }
+  });
+  const [hidePartnerOffers, setHidePartnerOffers] = useState(() => {
+    try { return localStorage.getItem('portal_hidePartnerOffers') === 'true'; } catch { return false; }
+  });
+  const [selectedCategory, setSelectedCategory] = useState(() => {
+    try { const saved = localStorage.getItem('portal_selectedCategory'); return saved || null; } catch { return null; }
+  }); // Категорія для фільтрації
+
+  // Збереження налаштувань фільтрів в localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('portal_hideZeroStock', String(hideZeroStock));
+    } catch (e) {
+      console.warn('Failed to save hideZeroStock to localStorage', e);
+    }
+  }, [hideZeroStock]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('portal_hidePartnerOffers', String(hidePartnerOffers));
+    } catch (e) {
+      console.warn('Failed to save hidePartnerOffers to localStorage', e);
+    }
+  }, [hidePartnerOffers]);
+
+  useEffect(() => {
+    try {
+      if (selectedCategory) {
+        localStorage.setItem('portal_selectedCategory', selectedCategory);
+      } else {
+        localStorage.removeItem('portal_selectedCategory');
+      }
+    } catch (e) {
+      console.warn('Failed to save selectedCategory to localStorage', e);
+    }
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('portal_smartPanelMode', smartPanelMode);
+    } catch (e) {
+      console.warn('Failed to save smartPanelMode to localStorage', e);
+    }
+  }, [smartPanelMode]);
 
   // Кеш товарів по брендах (ключ: brandName, значення: { products, lastDoc, hasMore })
   const brandCacheRef = useRef(new Map());

@@ -11,6 +11,8 @@ import SuppliersPage from "./pages/SuppliersPage.jsx";
 import ClientsPage from "./pages/ClientsPage.jsx";
 import DataPage from "./pages/DataPage.jsx";
 import ExportPage from "./pages/ExportPage.jsx";
+import PurchasesPage from "./pages/PurchasesPage.jsx";
+import OrdersExportPage from "./pages/OrdersExportPage.jsx";
 import AdminLogin from "./components/AdminLogin.jsx";
 import { logger } from "../utils/logger.js";
 
@@ -26,8 +28,10 @@ function Placeholder({ title }) {
 const NAV = [
   { key: "orders",    label: "Замовлення",     page: <OrdersPage /> },
   { key: "products",  label: "Товари",         page: <ProductsPage /> },
+  { key: "purchases", label: "ЗАКУПКИ",        page: null }, // Обробляється окремо
   { key: "suppliers", label: "Постачальники",  page: <Placeholder title="Постачальники" /> },
   { key: "export",    label: "Експорт",        page: <Placeholder title="Експорт" /> },
+  { key: "orders-export", label: "Вигрузка замовлень", page: null }, // Обробляється окремо
   { key: "clients",   label: "Клієнти",        page: null }, // Обробляється окремо
   { key: "data",      label: "Дані",           page: <DataPage /> },
 ];
@@ -199,12 +203,16 @@ export default function AdminApp() {
       )}
 
       {/* Тут підміняємо сторінки, яким треба setStatus */}
-      {current.key === "suppliers"
+      {current.key === "purchases"
+        ? <PurchasesPage setStatus={setStatus} />
+        : current.key === "suppliers"
         ? <SuppliersPage setStatus={setStatus} />
         : current.key === "export"
         ? <ExportPage setStatus={setStatus} />
+        : current.key === "orders-export"
+        ? <OrdersExportPage setStatus={setStatus} />
         : current.key === "clients"
-        ? <ClientsPage initialTab={pendingRequestsCount > 0 && !notificationDismissed ? "requests" : "clients"} />
+        ? <ClientsPage initialTab={pendingRequestsCount > 0 && !notificationDismissed ? "requests" : "clients"} setStatus={setStatus} />
         : current.page}
     </AdminLayout>
   );

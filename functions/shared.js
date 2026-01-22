@@ -1,7 +1,14 @@
 // functions/shared.js — common helpers for Firestore & products
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
+const admin = require("firebase-admin");
+
+// Переконаємося, що admin ініціалізований перед викликом getFirestore
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 const db = getFirestore();
+
 const APP_ID = process.env.APP_ID || "embryo-project";
 
 // Cache variables
@@ -42,6 +49,19 @@ const normalizeBrand = async (v) => {
   return brandSynonymsCache.get(key) || display;
 };
 const normalizeSupplier = (v) => str(v, 120).replace(/\s{2,}/g, " ").trim();
+
+/**
+ * Sanitize document ID - замінює небезпечні символи (/, \, та інші) на безпечні
+ * Використовується для брендів, які можуть містити "/" (наприклад, "Citroen/Peugeot")
+ */
+function sanitizeDocId(docId) {
+  if (!docId) return "";
+  // Замінюємо / на _, інші небезпечні символи також
+  return String(docId)
+    .replace(/\//g, "_")
+    .replace(/\\/g, "_")
+    .replace(/[^\w.-]/g, (m) => (m === "-" || m === "." ? m : "_"));
+}
 
 // Load all caches function
 async function loadAllCaches() {
@@ -188,34 +208,31 @@ const isAdminReq = (req) => {
 };
 
 
-async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, purchase, categories, pack, tolerances, needsReview, synonyms, ukrSkladId, ukrSkladGroupId, minStock, prices }) {
+async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, categories, pack, tolerances, needsReview, synonyms, ukrSkladId, ukrSkladGroupId, minStock, lastSupplier, prices }) {
   supplier = normalizeSupplier(supplier);
   brand = await normalizeBrand(brand);
   const article = normalizeArticle(id);
   const stockNum = Number.isFinite(stock) ? stock : (num(stock) ?? 0);
-  const purchaseNum = Number.isFinite(purchase) ? purchase : (num(purchase) ?? 0);
   if (!supplier || !brand || !article) throw new Error("upsertProduct: supplier/brand/id required.");
 
-  // НОВИЙ docId (без supplier)
-  const docId = `${brand}-${article}`
+  // НОВИЙ docId (без supplier) - використовуємо sanitizeDocId для безпеки
+  const sanitizedBrand = sanitizeDocId(brand);
+  const docId = `${sanitizedBrand}-${article}`
     .replace(/\s+/g, "-")
     .replace(/[^\w.-]/g, "_");
-
+  
   const productKey = docId; // brand-article
   const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${docId}`);
-  const costRef = db.doc(`/artifacts/${APP_ID}/private/data/productCosts/${docId}`);
   const supplierProductRef = db.doc(`/artifacts/${APP_ID}/public/data/supplierProducts/${supplier}-${productKey}`);
 
   // Використовуємо транзакцію для безпечного оновлення offers[]
   return await db.runTransaction(async (tx) => {
     const productSnap = await tx.get(productRef);
-    const costSnap = await tx.get(costRef);
     
     const exists = productSnap.exists;
     logger.info("upsertProduct: transaction", { docId, supplier, brand, article, exists });
     
     let productData = exists ? productSnap.data() : {};
-    let costData = costSnap.exists ? costSnap.data() : {};
     
     // Оновлення базових полів (тільки якщо не встановлені або оновлюємо)
     if (!productData.brand) productData.brand = brand;
@@ -232,26 +249,36 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, p
     if (tolerances !== undefined) productData.tolerances = tolerances;
     if (needsReview !== undefined) productData.needsReview = needsReview;
     if (synonyms !== undefined) productData.synonyms = Array.isArray(synonyms) ? synonyms : [];
+    // Зберігаємо останнього постачальника з UkrSklad CSV (тільки якщо передано і не порожнє)
+    if (lastSupplier !== undefined && lastSupplier && String(lastSupplier).trim()) {
+      productData.lastSupplier = str(lastSupplier, 200);
+    }
+    
+    // Зберігаємо ukrSkladId, ukrSkladGroupId, minStock в корінь продукту (тільки для "Мій склад")
+    if (supplier === "Мій склад") {
+      if (ukrSkladId !== undefined && ukrSkladId !== null && String(ukrSkladId).trim()) {
+        productData.ukrSkladId = str(ukrSkladId, 200);
+      }
+      if (ukrSkladGroupId !== undefined && ukrSkladGroupId !== null && String(ukrSkladGroupId).trim()) {
+        productData.ukrSkladGroupId = str(ukrSkladGroupId, 200);
+      }
+      if (minStock !== undefined) {
+        productData.minStock = Number.isFinite(minStock) ? minStock : (num(minStock) ?? null);
+      }
+    }
     
     // Оновлення offers[]
     if (!productData.offers) productData.offers = [];
     
     const offerIndex = productData.offers.findIndex(o => o.supplier === supplier);
     const newOffer = {
-    supplier,
-    stock: stockNum || 0,
-    publicPrices: Object.fromEntries(
-      Object.entries(publicPrices || {}).map(([k, v]) => [k, round2(v)])
-    ),
+      supplier,
+      stock: stockNum || 0,
+      publicPrices: Object.fromEntries(
+        Object.entries(publicPrices || {}).map(([k, v]) => [k, round2(v)])
+      ),
       updatedAt: Timestamp.now()
     };
-    
-    // Додаткові поля для "Мій склад"
-    if (supplier === "Мій склад") {
-      if (ukrSkladId !== undefined) newOffer.ukrSkladId = str(ukrSkladId, 200);
-      if (ukrSkladGroupId !== undefined) newOffer.ukrSkladGroupId = str(ukrSkladGroupId, 200);
-      if (minStock !== undefined) newOffer.minStock = Number.isFinite(minStock) ? minStock : (num(minStock) ?? null);
-    }
     
     if (offerIndex >= 0) {
       productData.offers[offerIndex] = newOffer;
@@ -259,14 +286,7 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, p
       productData.offers.push(newOffer);
     }
     
-    // Оновлення purchaseBySupplier
-    if (!costData.purchaseBySupplier) costData.purchaseBySupplier = {};
-    if (purchaseNum > 0) {
-      costData.purchaseBySupplier[supplier] = purchaseNum;
-    }
-    
     productData.updatedAt = FieldValue.serverTimestamp();
-    costData.updatedAt = FieldValue.serverTimestamp();
     
     // Перевірка, що productData містить мінімальні поля
     if (!productData.brand || !productData.id) {
@@ -276,7 +296,6 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, p
     
     // Запис
     tx.set(productRef, productData, { merge: true });
-    tx.set(costRef, costData, { merge: true });
     
     // Оновлення supplierProducts
     tx.set(supplierProductRef, {
@@ -288,7 +307,7 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, p
     
     logger.info("upsertProduct: transaction commit", { docId, offersCount: productData.offers?.length || 0 });
     
-  return docId;
+    return docId;
   });
 }
 
@@ -298,16 +317,16 @@ async function removeProduct({ supplier, id, brand }) {
   if (!supplierNorm || !article) return;
 
   const publicColl = db.collection(`/artifacts/${APP_ID}/public/data/products`);
-  const privateBase = `/artifacts/${APP_ID}/private/data/productCosts`;
   const supplierProductsCol = db.collection(`/artifacts/${APP_ID}/public/data/supplierProducts`);
 
   // Нормалізуємо brand для формування docId (ДО транзакції)
   let brandNorm = null;
   let productRef = null;
-
+  
   if (brand) {
     brandNorm = await normalizeBrand(brand);
-    const docId = `${brandNorm}-${article}`
+    const sanitizedBrand = sanitizeDocId(brandNorm);
+    const docId = `${sanitizedBrand}-${article}`
       .replace(/\s+/g, "-")
       .replace(/[^\w.-]/g, "_");
     productRef = publicColl.doc(docId);
@@ -334,20 +353,10 @@ async function removeProduct({ supplier, id, brand }) {
     // Видаляємо пропозицію з масиву
     const updatedOffers = [...productData.offers];
     updatedOffers.splice(offerIndex, 1);
-    
-    const costRef = db.doc(`${privateBase}/${productRef.id}`);
-    const costSnap = await tx.get(costRef);
-    let costData = costSnap.exists ? costSnap.data() : {};
-
-    // Видаляємо purchaseBySupplier[supplier]
-    if (costData.purchaseBySupplier && costData.purchaseBySupplier[supplierNorm]) {
-      delete costData.purchaseBySupplier[supplierNorm];
-    }
 
     // Якщо offers[] стає порожнім - видаляємо весь документ
     if (updatedOffers.length === 0) {
       tx.delete(productRef);
-      tx.delete(costRef);
     } else {
       // Оновлюємо документ без видаленої пропозиції
       const updatedProductData = {
@@ -356,15 +365,12 @@ async function removeProduct({ supplier, id, brand }) {
         updatedAt: FieldValue.serverTimestamp()
       };
       tx.set(productRef, updatedProductData, { merge: true });
-      
-      if (costSnap.exists) {
-        costData.updatedAt = FieldValue.serverTimestamp();
-        tx.set(costRef, costData, { merge: true });
-      }
     }
 
     // Видаляємо запис з supplierProducts
-    const productKey = `${productData.brand}-${productData.id}`;
+    // ВАЖЛИВО: використовуємо sanitizeDocId для бренду, щоб уникнути проблем з "/" та "()"
+    const sanitizedBrand = sanitizeDocId(productData.brand || "");
+    const productKey = `${sanitizedBrand}-${normalizeArticle(productData.id || "")}`;
     const supplierProductRef = supplierProductsCol.doc(`${supplierNorm}-${productKey}`);
     tx.delete(supplierProductRef);
   });
@@ -380,6 +386,7 @@ module.exports = {
   normalizeArticle,
   normalizeBrand,
   normalizeSupplier,
+  sanitizeDocId,
   isAdminReq,
   upsertProduct,
   removeProduct,

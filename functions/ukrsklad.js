@@ -5,10 +5,8 @@ const logger = require("firebase-functions/logger");
 const { google } = require("googleapis");
 const iconv = require("iconv-lite");
 const Papa = require("papaparse");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
-const { normalizeBrand, normalizeArticle, getProductMasterData, upsertProduct, removeProduct } = require("./shared");
+const { normalizeBrand, normalizeArticle, getProductMasterData, upsertProduct, removeProduct, db, FieldValue } = require("./shared");
 
-const db = getFirestore();
 const APP_ID = process.env.APP_ID || "embryo-project";
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
 
@@ -191,19 +189,8 @@ async function performUkrSkladSync(forceSync = false) {
           const canonicalKey = `${canonicalBrand}-${canonicalArticle}`;
           normalizedProductKeys.add(canonicalKey);
 
-          // Якщо stock <= 0 — готуємо видалення канонічного запису
-          if (stock <= 0) {
-            const existing = existingMap.get(canonicalKey) || existingMap.get(productKey);
-            if (existing) {
-              operationsToRemove.push({
-                productKey: canonicalKey,
-                productDocId: existing.productDocId,
-                id: existing.data?.id,
-                brand: existing.data?.brand
-              });
-            }
-            continue;
-          }
+          // Якщо stock <= 0 — записуємо як 0 (не видаляємо)
+          const finalStock = stock <= 0 ? 0 : stock;
 
           // Обробка pack (тільки якщо немає masterData)
           const pack = masterData ? null : (() => {
@@ -215,6 +202,9 @@ async function performUkrSkladSync(forceSync = false) {
             return isNaN(packNum) ? null : String(packNum);
           })();
 
+          // Зчитуємо останнього постачальника з CSV
+          const lastSupplierFromCsv = str(row["supplier"] || row["постачальник"] || "");
+
           operationsToUpsert.push({
             supplier: supplierNorm,
             normalizedBrand,
@@ -223,17 +213,17 @@ async function performUkrSkladSync(forceSync = false) {
             canonicalArticle,
             rawId: idToUse,
             name: masterData?.correctName || str(row["name"] || ""),
-            stock,
+            stock: finalStock,
             publicPrices,
-            purchase: num(row["price_purchase"]) ?? 0,
             categories: masterData?.categories || null, // Завжди з masterData, не парсити з CSV
             pack: masterData?.pack || pack,
             tolerances: masterData?.tolerances || null,
             synonyms: masterData?.synonyms || [],
             needsReview: !masterData,
-            ukrSkladId: str(row["ID"]),
+            ukrSkladId: str(row["id"] || row["ID"] || ""),
             ukrSkladGroupId: str(row["group_id"]),
             minStock: num(row["minimum"]),
+            lastSupplier: lastSupplierFromCsv, // Останній постачальник з CSV
             productKey: canonicalKey
           });
         } catch (e) {
@@ -302,7 +292,6 @@ async function performUkrSkladSync(forceSync = false) {
               name: op.name,
               stock: op.stock,
               publicPrices: op.publicPrices,
-              purchase: op.purchase,
               categories: op.categories,
               pack: op.pack,
               tolerances: op.tolerances,
@@ -310,7 +299,8 @@ async function performUkrSkladSync(forceSync = false) {
               needsReview: op.needsReview,
               ukrSkladId: op.ukrSkladId,
               ukrSkladGroupId: op.ukrSkladGroupId,
-              minStock: op.minStock
+              minStock: op.minStock,
+              lastSupplier: op.lastSupplier // Останній постачальник з CSV
             });
             return { success: true, productKey: op.productKey };
           } catch (e) {
@@ -473,6 +463,8 @@ exports.ukrSkladSync = onSchedule(
     timeZone: "Europe/Kyiv", 
     region: REGION,
     maxInstances: 1,  // Обмеження: тільки один екземпляр одночасно
+    timeoutSeconds: 540,
+    memory: "512MiB"
   },
   async () => {
     try {

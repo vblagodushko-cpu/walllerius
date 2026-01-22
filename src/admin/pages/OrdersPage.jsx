@@ -241,17 +241,17 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
       <div className="space-y-4">
         {/* Заголовок з інформацією та перемикачем валют */}
         <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b">
-          <div>
+        <div>
             <div className="font-semibold text-lg">
               {order.clientName}
-            </div>
-            <div className="text-sm text-slate-500">
-              {order.clientPhone || "—"} • {order.createdAt?.seconds
-                ? new Date(order.createdAt.seconds * 1000).toLocaleString()
-                : "—"}
-            </div>
           </div>
-          
+          <div className="text-sm text-slate-500">
+              {order.clientPhone || "—"} • {order.createdAt?.seconds
+              ? new Date(order.createdAt.seconds * 1000).toLocaleString()
+              : "—"}
+          </div>
+        </div>
+
           {/* Перемикач валют */}
           <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
             <button
@@ -334,7 +334,22 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                     </td>
                     {/* Ціна */}
                     <td className="px-2 py-1.5 text-right text-xs">
-                      {convertPrice(unitPrice).toFixed(2)} {currencySymbol}
+                      <div className="flex flex-col items-end">
+                        <span>{convertPrice(unitPrice).toFixed(2)} {currencySymbol}</span>
+                        {/* Підказка про adjustment (пріоритет) */}
+                        {it.hasAdjustment && (
+                          <span className="text-xs text-red-600 font-medium mt-0.5">
+                            Увага СПЕЦІАЛЬНА
+                          </span>
+                        )}
+                        {/* Підказка про нестандартну групу цін (якщо немає adjustment) */}
+                        {!it.hasAdjustment && it.priceGroup && it.defaultPriceGroup && 
+                         it.priceGroup !== it.defaultPriceGroup && (
+                          <span className="text-xs text-red-600 font-medium mt-0.5">
+                            {it.priceGroup}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* Залишок */}
                     <td className="px-2 py-1.5 text-center text-xs text-slate-500">
@@ -364,15 +379,15 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                     </td>
                     {/* Скасовано */}
                     <td className="px-2 py-1.5 text-center">
-                      <input
-                        type="number"
-                        min={0}
-                        max={it.quantity || 0}
-                        value={it.quantityCancelled ?? 0}
-                        onChange={(e) => recompute(idx, e.target.value)}
+                    <input
+                      type="number"
+                      min={0}
+                      max={it.quantity || 0}
+                      value={it.quantityCancelled ?? 0}
+                      onChange={(e) => recompute(idx, e.target.value)}
                         className="w-14 p-1 text-center border rounded text-xs"
-                      />
-                    </td>
+                    />
+                  </td>
                     {/* Підтверджено */}
                     <td className="px-2 py-1.5 text-center font-medium text-green-700">
                       {it.quantityConfirmed ?? 0}
@@ -383,9 +398,9 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                     </td>
                     {/* Статус - кольоровий текст */}
                     <td className="px-2 py-1.5">
-                      <select
-                        value={it.lineStatus || ""}
-                        onChange={(e) => setLineStatus(idx, e.target.value)}
+                    <select
+                      value={it.lineStatus || ""}
+                      onChange={(e) => setLineStatus(idx, e.target.value)}
                         className={`p-1 border rounded text-xs w-full max-w-[140px] font-medium ${
                           it.lineStatus === "Виконано" 
                             ? "text-green-600 bg-green-50 border-green-200" 
@@ -397,21 +412,21 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                         <option value="Очікує підтвердження">Очікує підтвердження</option>
                         <option value="Замовлено у постачальника">Замовлено у постачальника</option>
                         <option value="Виконано">Виконано</option>
-                      </select>
-                    </td>
+                    </select>
+                  </td>
                     {/* Кнопка "Підтв. все" - компактна галочка */}
                     <td className="px-2 py-1.5 text-center">
-                      <button
-                        onClick={() => quickConfirmAll(idx)}
+                    <button
+                      onClick={() => quickConfirmAll(idx)}
                         className="p-1.5 rounded hover:bg-green-100 text-green-600 transition-colors"
                         title="Підтвердити все"
-                      >
+                    >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                         </svg>
-                      </button>
-                    </td>
-                  </tr>
+                    </button>
+                  </td>
+                </tr>
                 );
               })}
               {!items.length && (

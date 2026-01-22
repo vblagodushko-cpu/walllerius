@@ -75,27 +75,39 @@ function findRule(pricingRules, type, brand, id, supplier) {
 }
 
 // Функція для розрахунку ціни з правилами клієнта
+// Повертає об'єкт: { price, priceGroup, defaultPriceGroup, hasAdjustment }
 function calculatePriceWithRules(product, offer, pricingRules, defaultPriceGroup) {
-  if (!offer || !offer.publicPrices) return 0;
+  if (!offer || !offer.publicPrices) {
+    return {
+      price: 0,
+      priceGroup: defaultPriceGroup || "роздріб",
+      defaultPriceGroup: defaultPriceGroup || "роздріб",
+      hasAdjustment: false
+    };
+  }
   
   let priceGroup = defaultPriceGroup || "роздріб";
   let adjustment = 0;
+  let hasRuleAdjustment = false;
   
   if (pricingRules && pricingRules.rules) {
     const productRule = findRule(pricingRules, "product", product.brand, product.id, null);
     if (productRule) {
       priceGroup = productRule.priceGroup;
       adjustment = Number(productRule.adjustment || 0);
+      hasRuleAdjustment = adjustment !== 0;
     } else {
       const brandRule = findRule(pricingRules, "brand", product.brand, null, null);
       if (brandRule) {
         priceGroup = brandRule.priceGroup;
         adjustment = Number(brandRule.adjustment || 0);
+        hasRuleAdjustment = adjustment !== 0;
       } else {
         const supplierRule = findRule(pricingRules, "supplier", null, null, offer.supplier);
         if (supplierRule) {
           priceGroup = supplierRule.priceGroup;
           adjustment = Number(supplierRule.adjustment || 0);
+          hasRuleAdjustment = adjustment !== 0;
         }
       }
     }
@@ -104,20 +116,39 @@ function calculatePriceWithRules(product, offer, pricingRules, defaultPriceGroup
   let basePrice = offer.publicPrices[priceGroup];
   if (!basePrice || basePrice <= 0) {
     basePrice = offer.publicPrices.роздріб;
-    if (!basePrice || basePrice <= 0) return 0;
+    if (!basePrice || basePrice <= 0) {
+      return {
+        price: 0,
+        priceGroup: defaultPriceGroup || "роздріб",
+        defaultPriceGroup: defaultPriceGroup || "роздріб",
+        hasAdjustment: false
+      };
+    }
   }
   
   let price = basePrice;
   // Застосовуємо персональний adjustment (може бути негативним для знижки або позитивним для націнки)
   price = price * (1 + adjustment/100);
   
-  // Застосовуємо загальний adjustment
+  // Перевіряємо загальний adjustment
+  let hasGlobalAdjustment = false;
   if (pricingRules) {
     const globalAdjustment = Number(pricingRules.globalAdjustment || 0);
-    price = price * (1 + globalAdjustment/100);
+    if (globalAdjustment !== 0) {
+      price = price * (1 + globalAdjustment/100);
+      hasGlobalAdjustment = true;
+    }
   }
   
-  return Math.ceil(price * 100) / 100;
+  const finalPrice = Math.ceil(price * 100) / 100;
+  const hasAdjustment = hasRuleAdjustment || hasGlobalAdjustment;
+  
+  return {
+    price: finalPrice,
+    priceGroup: priceGroup,
+    defaultPriceGroup: defaultPriceGroup || "роздріб",
+    hasAdjustment: hasAdjustment
+  };
 }
 
 // Функція для округлення ціни
@@ -139,12 +170,13 @@ async function generateCsvFromProducts(products, priceType, clientCode, clientPr
     let price = 0;
     if (clientCode && clientPricingRules) {
       // Використовуємо правила клієнта
-      price = calculatePriceWithRules(
+      const priceResult = calculatePriceWithRules(
         { brand: product.brand, id: product.id },
         offer,
         clientPricingRules,
         "роздріб"
       );
+      price = priceResult.price;
     } else if (priceType) {
       // Використовуємо стандартну ціну
       price = Number(offer.publicPrices[priceType]) || 0;
