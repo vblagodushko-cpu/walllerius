@@ -87,6 +87,12 @@ service cloud.firestore {
           allow write: if isAdmin();
         }
         
+        // Рекомендовані товари: читання доступне авторизованим, запис лише адміну
+        match /featuredProducts/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+        
         // Заявки на реєстрацію та відновлення пароля
         match /registrationRequests/{requestId} {
           allow create: if true; // Будь-хто може створювати заявки (неавторизовані користувачі)

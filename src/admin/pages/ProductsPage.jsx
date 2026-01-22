@@ -6,11 +6,13 @@ import {
   orderBy,
   where,
   limit,
-  startAt,
-  endAt,
+  doc,
+  getDoc,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
+import Tabs from "../components/Tabs.jsx";
+import { useClientSearch } from "../hooks/useClientSearch.js";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -37,25 +39,138 @@ export default function ProductsPage() {
   
   // Клієнт та пошук
   const [selectedClient, setSelectedClient] = useState(null); // Вибраний клієнт
-  const [clientSearch, setClientSearch] = useState(""); // Пошук клієнта
-  const [clientSearchResults, setClientSearchResults] = useState([]); // Результати пошуку
   const [clientPricingRules, setClientPricingRules] = useState(null); // Правила ціноутворення
-  const [searchingClients, setSearchingClients] = useState(false); // Стан завантаження пошуку
+  
+  // Використовуємо спільний хук для пошуку клієнтів
+  const {
+    searchQuery: clientSearch,
+    setSearchQuery: setClientSearch,
+    filteredClients: clientSearchResults,
+    loading: searchingClients,
+  } = useClientSearch({
+    debounceMs: 400, // Debounce для autocomplete
+    maxResults: 10, // Обмеження для autocomplete
+    autoLoad: true,
+  });
   
   // Списки для фільтрів
   const [brandsList, setBrandsList] = useState([]); // [{id, name}] з brandsCache
   const [suppliersList, setSuppliersList] = useState([]);
   
+  // Смарт-панель (як на порталі)
+  const [smartPanelMode, setSmartPanelMode] = useState('groups'); // 'groups' | 'brands'
+  const [selectedGroup, setSelectedGroup] = useState(null); // groupId
+  const [expandedGroup, setExpandedGroup] = useState(null); // groupId або null
+  const [productGroups, setProductGroups] = useState([]); // Групи з brandFolders
+  
   // Результати пошуку
   const [products, setProducts] = useState([]); // Товари з Firestore
   const [displayRows, setDisplayRows] = useState([]); // Рядки для відображення (з offers[])
   const [loading, setLoading] = useState(false);
+  
+  // Featured products
+  const [activeTab, setActiveTab] = useState("catalog"); // "catalog" | "featured"
+  const [featuredProducts, setFeaturedProducts] = useState([]); // [{brand, id, addedAt}]
+  const [featuredProductsData, setFeaturedProductsData] = useState([]); // Повні дані товарів
+  const [loadingFeatured, setLoadingFeatured] = useState(false);
+  const [statusMessage, setStatusMessage] = useState(null); // {type: 'success'|'error', text: string}
 
   // Кеш товарів по брендах (ключ: brandId, значення: { products })
   const brandCacheRef = useRef(new Map());
   
-  // Debounce timer для пошуку клієнтів
-  const clientSearchDebounceRef = useRef(null);
+  // Завантаження featured products
+  const loadFeaturedProducts = useCallback(async () => {
+    setLoadingFeatured(true);
+    try {
+      const featuredRef = doc(db, `/artifacts/${appId}/public/data/featuredProducts/main`);
+      const featuredSnap = await getDoc(featuredRef);
+      
+      if (featuredSnap.exists()) {
+        const data = featuredSnap.data();
+        const items = data.items || [];
+        setFeaturedProducts(items);
+        
+        if (items.length === 0) {
+          setFeaturedProductsData([]);
+          setLoadingFeatured(false);
+          return;
+        }
+        
+        // Завантажуємо повні дані товарів
+        const productPromises = items.map(async (item) => {
+          try {
+            // Шукаємо товар по brand та id
+            const productsQuery = query(
+              collection(db, `/artifacts/${appId}/public/data/products`),
+              where("brand", "==", item.brand),
+              where("id", "==", item.id),
+              limit(1)
+            );
+            const productSnap = await getDocs(productsQuery);
+            if (!productSnap.empty) {
+              const productDoc = productSnap.docs[0];
+              return { docId: productDoc.id, ...productDoc.data() };
+            }
+            return null;
+          } catch (e) {
+            console.warn("Failed to load featured product", item.brand, item.id, e);
+            return null;
+          }
+        });
+        
+        const products = (await Promise.all(productPromises)).filter(p => p !== null);
+        setFeaturedProductsData(products);
+      } else {
+        setFeaturedProducts([]);
+        setFeaturedProductsData([]);
+      }
+    } catch (e) {
+      console.error('[Admin ProductsPage] Failed to load featured products', e);
+      setFeaturedProducts([]);
+      setFeaturedProductsData([]);
+    } finally {
+      setLoadingFeatured(false);
+    }
+  }, [appId]);
+  
+  // Завантаження featured products при монтуванні
+  useEffect(() => {
+    loadFeaturedProducts();
+  }, [loadFeaturedProducts]);
+  
+  // Функції для додавання/видалення featured products
+  const handleAddFeatured = useCallback(async (brand, id) => {
+    try {
+      const call = httpsCallable(functions, "addFeaturedProduct");
+      await call({ brand, id });
+      await loadFeaturedProducts(); // Оновлюємо список
+      setStatusMessage({ type: 'success', text: `Товар ${brand} ${id} додано до рекомендованих` });
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (e) {
+      console.error("Failed to add featured product", e);
+      setStatusMessage({ type: 'error', text: e?.message || "Не вдалося додати товар до рекомендованих" });
+      setTimeout(() => setStatusMessage(null), 3000);
+    }
+  }, [loadFeaturedProducts]);
+  
+  const handleRemoveFeatured = useCallback(async (brand, id) => {
+    try {
+      const call = httpsCallable(functions, "removeFeaturedProduct");
+      await call({ brand, id });
+      await loadFeaturedProducts(); // Оновлюємо список
+      setStatusMessage({ type: 'success', text: `Товар ${brand} ${id} видалено з рекомендованих` });
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (e) {
+      console.error("Failed to remove featured product", e);
+      setStatusMessage({ type: 'error', text: e?.message || "Не вдалося видалити товар з рекомендованих" });
+      setTimeout(() => setStatusMessage(null), 3000);
+    }
+  }, [loadFeaturedProducts]);
+  
+  // Перевірка, чи товар є в featured
+  const isFeatured = useCallback((brand, id) => {
+    return featuredProducts.some(item => item.brand === brand && item.id === id);
+  }, [featuredProducts]);
 
   // Завантаження списку брендів з кешу (як на порталі)
   useEffect(() => {
@@ -74,6 +189,32 @@ export default function ProductsPage() {
     };
     
     loadBrands();
+  }, []);
+
+  // Завантаження груп (brandFolders)
+  useEffect(() => {
+    const loadGroups = async () => {
+      try {
+        const snap = await getDocs(
+          query(collection(db, `/artifacts/${appId}/public/meta/brandFolders`))
+        );
+        const groups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Сортуємо групи: спочатку category, потім preset
+        groups.sort((a, b) => {
+          const aType = a.groupType || (a.filterType === 'category' ? 'category' : 'preset');
+          const bType = b.groupType || (b.filterType === 'category' ? 'category' : 'preset');
+          if (aType !== bType) {
+            return aType === 'category' ? -1 : 1;
+          }
+          return String(a.name || a.id).localeCompare(String(b.name || b.id));
+        });
+        setProductGroups(groups);
+      } catch (e) {
+        console.error("Помилка завантаження груп", e);
+      }
+    };
+    
+    loadGroups();
   }, []);
 
   // Завантаження списку постачальників (з offers[] товарів)
@@ -118,18 +259,6 @@ export default function ProductsPage() {
     return s.replace(/\s+/g, "").replace(/[^\w.-]/g, "");
   };
 
-  // Нормалізація для case-insensitive id (як у ClientsPage)
-  const normId = (s) => String(s || "").trim().toUpperCase();
-  // Нормалізація для телефону: лишаємо тільки цифри
-  const normPhone = (s) => String(s || "").replace(/\D/g, "");
-
-  // Визначаємо, за чим шукати: якщо у введенні є 3+ цифр і майже немає літер — шукаємо по phone
-  const isPhoneQuery = (s) => {
-    const digits = normPhone(s);
-    const letters = String(s || "").replace(/[^A-Za-zА-Яа-яЇїІіЄєҐґ]/g, "");
-    return digits.length >= 3 && letters.length === 0;
-  };
-
   // Фільтрований список брендів для бічної панелі
   const filteredBrands = useMemo(() => {
     if (!brandSearch.trim()) return brandsList;
@@ -138,74 +267,6 @@ export default function ProductsPage() {
       String(b.name || "").toLowerCase().includes(searchLower)
     );
   }, [brandsList, brandSearch]);
-
-  // Пошук клієнтів (як у ClientsPage)
-  const searchClients = useCallback(async (searchQuery) => {
-    if (!searchQuery || !searchQuery.trim()) {
-      setClientSearchResults([]);
-      return;
-    }
-
-    setSearchingClients(true);
-    try {
-      const s = searchQuery.trim();
-      const parts = [];
-      
-      if (isPhoneQuery(s)) {
-        const p = normPhone(s);
-        parts.push(orderBy("phone"));
-        parts.push(startAt(p));
-        parts.push(endAt(p + "\uf8ff"));
-      } else {
-        const id = normId(s);
-        parts.push(orderBy("id"));
-        parts.push(startAt(id));
-        parts.push(endAt(id + "\uf8ff"));
-      }
-      
-      parts.push(limit(10)); // Обмежуємо до 10 результатів для autocomplete
-      
-      const q = query(
-        collection(db, `/artifacts/${appId}/public/data/clients`),
-        ...parts
-      );
-      
-      const snap = await getDocs(q);
-      const results = snap.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      
-      setClientSearchResults(results);
-    } catch (e) {
-      console.error("Помилка пошуку клієнтів", e);
-      setClientSearchResults([]);
-    } finally {
-      setSearchingClients(false);
-    }
-  }, [appId]);
-
-  // Debounced пошук клієнтів
-  useEffect(() => {
-    if (clientSearchDebounceRef.current) {
-      clearTimeout(clientSearchDebounceRef.current);
-    }
-    
-    if (!clientSearch.trim()) {
-      setClientSearchResults([]);
-      return;
-    }
-    
-    clientSearchDebounceRef.current = setTimeout(() => {
-      searchClients(clientSearch);
-    }, 400);
-    
-    return () => {
-      if (clientSearchDebounceRef.current) {
-        clearTimeout(clientSearchDebounceRef.current);
-      }
-    };
-  }, [clientSearch, searchClients]);
 
   // Завантаження правил ціноутворення для вибраного клієнта
   useEffect(() => {
@@ -459,7 +520,7 @@ export default function ProductsPage() {
           // Додаткові поля з offer (якщо є)
           ukrSkladId: offer.ukrSkladId,
           ukrSkladGroupId: offer.ukrSkladGroupId,
-          minStock: offer.minStock,
+          minStock: product.minStock, // Читаємо з кореня продукту
         });
       }
     }
@@ -516,83 +577,264 @@ export default function ProductsPage() {
     return groups;
   }, [displayRows]);
 
+  const tabsItems = [
+    { key: "catalog", label: "Каталог" },
+    { key: "featured", label: "Рекомендовані" },
+  ];
+  
   return (
     <div className="bg-white rounded-2xl shadow p-4">
-      <h2 className="text-xl font-semibold mb-4">Товари</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold">Товари</h2>
+        <Tabs items={tabsItems} value={activeTab} onChange={setActiveTab} />
+      </div>
       
-      <div className="grid grid-cols-12 gap-4">
+      {/* Статус повідомлення */}
+      {statusMessage && (
+        <div className={`mb-4 p-3 rounded-lg ${
+          statusMessage.type === 'success' 
+            ? 'bg-green-100 text-green-800 border border-green-200' 
+            : 'bg-red-100 text-red-800 border border-red-200'
+        }`}>
+          {statusMessage.text}
+        </div>
+      )}
+      
+      {activeTab === "featured" ? (
+        <div>
+          <div className="mb-4">
+            <p className="text-sm text-gray-600">
+              Тут відображаються рекомендовані товари, які показуються на порталі клієнта.
+            </p>
+          </div>
+          
+          {loadingFeatured ? (
+            <div className="text-center py-8 text-gray-500">Завантаження...</div>
+          ) : featuredProductsData.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              Немає рекомендованих товарів. Додайте товари з каталогу, використовуючи кнопку 📌.
+            </div>
+          ) : (
+            <div className="overflow-auto border rounded-xl">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Бренд</th>
+                    <th className="px-3 py-2 text-left">Артикул</th>
+                    <th className="px-3 py-2 text-left">Назва</th>
+                    <th className="px-3 py-2 text-left">Додано</th>
+                    <th className="px-3 py-2 text-left">Дії</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {featuredProductsData.map((product) => (
+                    <tr key={`${product.brand}-${product.id}`} className="border-t">
+                      <td className="px-3 py-2 whitespace-nowrap">{product.brand}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{product.id}</td>
+                      <td className="px-3 py-2">{product.name}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-gray-500 text-xs">
+                        {featuredProducts.find(item => item.brand === product.brand && item.id === product.id)?.addedAt?.toDate?.()?.toLocaleDateString('uk-UA') || '—'}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          onClick={() => handleRemoveFeatured(product.brand, product.id)}
+                          className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
+                        >
+                          Видалити
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-12 gap-4">
         {/* Бічна панель з пошуком по бренду */}
         <aside className="col-span-12 md:col-span-3">
           <div className="bg-white border rounded-lg shadow-sm p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="font-semibold text-gray-700">Бренди</div>
-              {selectedBrand && (
+            {/* Тумблер режимів */}
+            <div className="flex gap-1 mb-2">
+              <button
+                className={`flex-1 px-2 py-1.5 rounded text-sm font-medium ${
+                  smartPanelMode === 'groups' 
+                    ? 'bg-indigo-600 text-white' 
+                    : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                onClick={() => setSmartPanelMode('groups')}
+              >
+                Групи
+              </button>
+              <button
+                className={`flex-1 px-2 py-1.5 rounded text-sm font-medium ${
+                  smartPanelMode === 'brands' 
+                    ? 'bg-indigo-600 text-white' 
+                    : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                onClick={() => setSmartPanelMode('brands')}
+              >
+                Бренди
+              </button>
+            </div>
+
+            {/* Кнопка очищення */}
+            {(selectedBrand || selectedGroup) && (
+              <div className="mb-2">
                 <button
-                  className="text-xs text-indigo-600 hover:underline"
+                  className="w-full text-xs text-indigo-600 hover:underline text-center"
                   onClick={() => {
                     setSelectedBrand("");
+                    setSelectedGroup(null);
+                    setExpandedGroup(null);
                     setBrandSearch("");
                     setArticleSearch("");
                   }}
                 >
-                  Очистити
+                  Очистити вибір
                 </button>
-              )}
-            </div>
-            
-            {/* Пошукове поле для брендів */}
-            <div className="relative mb-3">
-              <input
-                type="text"
-                className="w-full border rounded px-3 py-2 pr-8 text-sm"
-                placeholder="Знайти бренд"
-                value={brandSearch}
-                onChange={(e) => setBrandSearch(e.target.value)}
-              />
-              {brandSearch && (
-                <button
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  onClick={() => {
-                    setBrandSearch("");
-                  }}
-                >
-                  ×
-                </button>
-              )}
-            </div>
-            
-            {/* Список брендів */}
-            <div className="max-h-[50vh] overflow-auto pr-1 space-y-1">
-              {filteredBrands.length > 0 ? (
-                filteredBrands.map((b) => {
-                  const isSelected = selectedBrand === b.id;
+              </div>
+            )}
+
+            {smartPanelMode === 'groups' ? (
+              <div className="space-y-1">
+                {productGroups.map(group => {
+                  const isExpanded = expandedGroup === group.id;
+                  const isSelected = selectedGroup === group.id;
+                  const groupType = group.groupType || (group.filterType === 'category' ? 'category' : 'preset');
+                  
                   return (
-                    <button
-                      key={b.id}
-                      className={`w-full text-left px-2 py-1.5 rounded text-sm transition-colors ${
-                        isSelected
-                          ? "bg-indigo-50 text-indigo-700 font-medium"
-                          : "hover:bg-gray-50 text-gray-700"
-                      }`}
-                      onClick={() => {
-                        const newBrand = isSelected ? "" : b.id;
-                        setSelectedBrand(newBrand);
-                        // Очищаємо артикул при виборі бренда, щоб бренд мав пріоритет
-                        if (newBrand) {
-                          setArticleSearch("");
-                        }
-                      }}
-                    >
-                      {b.name || b.id}
-                    </button>
+                    <div key={group.id} className="border border-gray-200 rounded">
+                      <button
+                        className={`w-full text-left px-2 py-1.5 flex items-center justify-between text-sm font-medium ${
+                          isSelected 
+                            ? 'bg-indigo-50 text-indigo-700' 
+                            : 'hover:bg-gray-50'
+                        }`}
+                        onClick={() => {
+                          if (groupType === 'preset' && group.brands && group.brands.length > 0) {
+                            // Для preset-груп з одним брендом - вибираємо бренд
+                            if (group.brands.length === 1) {
+                              const brand = brandsList.find(b => b.name === group.brands[0]);
+                              if (brand) {
+                                setSelectedBrand(brand.id);
+                                setSelectedGroup(null);
+                                setExpandedGroup(null);
+                                setArticleSearch("");
+                              }
+                            } else {
+                              // Для preset-груп з кількома брендами - розгортаємо/згортаємо
+                              if (isExpanded) {
+                                setExpandedGroup(null);
+                                if (selectedGroup === group.id) {
+                                  setSelectedGroup(null);
+                                }
+                              } else {
+                                setExpandedGroup(group.id);
+                                setSelectedGroup(group.id);
+                              }
+                            }
+                          } else if (groupType === 'category') {
+                            // Для category-груп - очищаємо вибір (категорії не підтримуються в адмін панелі)
+                            setSelectedGroup(null);
+                            setSelectedBrand("");
+                            setExpandedGroup(null);
+                            setArticleSearch("");
+                          }
+                        }}
+                      >
+                        <span>{group.name || group.id}</span>
+                        {groupType === 'preset' && group.brands && group.brands.length > 1 && (
+                          <span className="text-[10px] text-gray-400">▼</span>
+                        )}
+                      </button>
+                      {isExpanded && groupType === 'preset' && group.brands && group.brands.length > 1 && (
+                        <div className="border-t border-gray-200">
+                          {group.brands.map((brandName, idx) => {
+                            const brand = brandsList.find(b => b.name === brandName);
+                            if (!brand) return null;
+                            const isBrandSelected = selectedBrand === brand.id;
+                            return (
+                              <button
+                                key={idx}
+                                className={`w-full text-left px-3 py-1.5 text-sm ${
+                                  isBrandSelected 
+                                    ? 'bg-indigo-50 text-indigo-700 font-medium' 
+                                    : 'hover:bg-gray-50'
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedBrand(isBrandSelected ? "" : brand.id);
+                                  setSelectedGroup(null);
+                                  setExpandedGroup(null);
+                                  setArticleSearch("");
+                                }}
+                              >
+                                {brandName}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   );
-                })
-              ) : (
-                <div className="text-sm text-gray-500 py-2">
-                  {brandSearch ? "Бренди не знайдено" : "Немає брендів"}
+                })}
+                {productGroups.length === 0 && (
+                  <div className="text-sm text-gray-500 px-2 py-1">Групи не налаштовані</div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {/* Пошукове поле для брендів */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Пошук брендів..."
+                    value={brandSearch}
+                    onChange={(e) => setBrandSearch(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
+                  />
+                  {brandSearch && (
+                    <button
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      onClick={() => setBrandSearch("")}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
-              )}
-            </div>
+                <div className="max-h-[50vh] overflow-auto space-y-0.5">
+                  {filteredBrands.length > 0 ? (
+                    filteredBrands.map(b => {
+                      const isSelected = selectedBrand === b.id;
+                      return (
+                        <button
+                          key={b.id}
+                          className={`w-full text-left px-2 py-1.5 rounded text-sm ${
+                            isSelected 
+                              ? 'bg-indigo-50 text-indigo-700 font-medium' 
+                              : 'hover:bg-gray-50'
+                          }`}
+                          onClick={() => {
+                            setSelectedBrand(isSelected ? "" : b.id);
+                            setSelectedGroup(null);
+                            setExpandedGroup(null);
+                            setArticleSearch("");
+                          }}
+                        >
+                          {b.name || b.id}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="text-sm text-gray-500 py-2">
+                      {brandSearch ? "Бренди не знайдено" : "Немає брендів"}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </aside>
 
@@ -607,18 +849,15 @@ export default function ProductsPage() {
                 placeholder="Пошук клієнта: телефон або код"
                 value={clientSearch}
                 onChange={(e) => setClientSearch(e.target.value)}
-                onFocus={() => {
-                  if (clientSearch.trim()) {
-                    searchClients(clientSearch);
-                  }
-                }}
                 onBlur={() => {
                   // Затримка перед закриттям, щоб клік по результату встиг спрацювати
-                  setTimeout(() => setClientSearchResults([]), 200);
+                  // Результати очистяться автоматично через хук, коли searchQuery стане порожнім
+                  setTimeout(() => {}, 200);
                 }}
               />
               {/* Випадаючий список результатів */}
-              {clientSearchResults.length > 0 && (
+              {/* Показуємо тільки якщо є текст у полі пошуку */}
+              {clientSearch.trim() && clientSearchResults.length > 0 && (
                 <div className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-60 overflow-auto">
                   {clientSearchResults.map((client) => (
                     <button
@@ -628,7 +867,7 @@ export default function ProductsPage() {
                       onClick={() => {
                         setSelectedClient(client);
                         setClientSearch("");
-                        setClientSearchResults([]);
+                        // Результати очистяться автоматично через хук
                       }}
                     >
                       <div className="font-medium">{client.name || client.id}</div>
@@ -737,6 +976,7 @@ export default function ProductsPage() {
               <th className="px-3 py-2 text-left">Постачальник</th>
               <th className="px-3 py-2 text-left">Наявність</th>
               <th className="px-3 py-2 text-left">Ціна</th>
+              <th className="px-3 py-2 text-left">Дії</th>
             </tr>
           </thead>
           <tbody>
@@ -786,12 +1026,33 @@ export default function ProductsPage() {
                         : "—";
                     })()}
                   </td>
+                  {offerIndex === 0 && (
+                    <td rowSpan={rowspan} className="px-3 py-2 align-top">
+                      <button
+                        onClick={() => {
+                          if (isFeatured(group.product.brand, group.product.id)) {
+                            handleRemoveFeatured(group.product.brand, group.product.id);
+                          } else {
+                            handleAddFeatured(group.product.brand, group.product.id);
+                          }
+                        }}
+                        className={`px-2 py-1 rounded text-sm transition-colors ${
+                          isFeatured(group.product.brand, group.product.id)
+                            ? "bg-yellow-100 text-yellow-700 hover:bg-yellow-200"
+                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                        }`}
+                        title={isFeatured(group.product.brand, group.product.id) ? "Видалити з рекомендованих" : "Додати до рекомендованих"}
+                      >
+                        {isFeatured(group.product.brand, group.product.id) ? "📌" : "📌"}
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ));
             })}
             {!displayRows.length && !loading && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                   {products.length === 0
                     ? "Натисніть 'Пошук' для завантаження товарів"
                     : "Немає даних за обраними фільтрами"}
@@ -800,7 +1061,7 @@ export default function ProductsPage() {
             )}
             {loading && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                   Завантаження…
                 </td>
               </tr>
@@ -810,6 +1071,7 @@ export default function ProductsPage() {
           </div>
         </section>
       </div>
+      )}
     </div>
   );
 }

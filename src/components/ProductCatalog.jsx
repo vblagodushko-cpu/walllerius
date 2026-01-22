@@ -58,8 +58,14 @@ const AddToCartModal = ({ product, onAddToCart, onClose }) => {
   );
 };
 
-const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStock = false, hidePartnerOffers = false, selectedCategory = null, clientPricingRules = null, selectedCurrency = 'EUR', uahRate = null }) => {
+const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStock = false, hidePartnerOffers = false, selectedCategory = null, clientPricingRules = null, selectedCurrency = 'EUR', uahRate = null, featuredProducts = [], showFeatured = false }) => {
   const [selectedProduct, setSelectedProduct] = useState(null);
+  
+  // Функція для відкриття пошуку в Google
+  const openGoogleSearch = (productName, productId) => {
+    const searchQuery = encodeURIComponent(`${productName} ${productId}`);
+    window.open(`https://www.google.com/search?q=${searchQuery}`, '_blank');
+  };
 
   // Функція для знаходження правила
   const findRule = (rules, type, brand, id, supplier) => {
@@ -207,6 +213,56 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
   const displayRows = useMemo(() => {
     const rows = [];
     
+    // Додаємо featured products на початок, якщо showFeatured = true
+    if (showFeatured && featuredProducts && featuredProducts.length > 0) {
+      for (const product of featuredProducts) {
+        if (!product.offers || !Array.isArray(product.offers)) {
+          continue;
+        }
+        
+        // Фільтрація offers для featured products
+        let filteredOffers = product.offers;
+        
+        if (hidePartnerOffers) {
+          filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
+        }
+        
+        if (hideZeroStock) {
+          filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
+        }
+        
+        if (filteredOffers.length === 0) continue;
+        
+        // Сортування offers
+        filteredOffers.sort((a, b) => {
+          if (a.supplier === "Мій склад" && b.supplier !== "Мій склад") return -1;
+          if (a.supplier !== "Мій склад" && b.supplier === "Мій склад") return 1;
+          
+          const productForRules = { brand: product.brand, id: product.id };
+          const priceA = clientPricingRules 
+            ? calculatePriceWithRules(productForRules, a)
+            : (getPrice(a.publicPrices, a.supplier) ?? Infinity);
+          const priceB = clientPricingRules
+            ? calculatePriceWithRules(productForRules, b)
+            : (getPrice(b.publicPrices, b.supplier) ?? Infinity);
+          return priceA - priceB;
+        });
+        
+        for (const offer of filteredOffers) {
+          rows.push({
+            docId: product.docId,
+            brand: product.brand || "",
+            id: product.id || "",
+            name: product.name || "",
+            supplier: offer.supplier || "",
+            stock: offer.stock ?? 0,
+            publicPrices: offer.publicPrices || {},
+            isFeatured: true,
+          });
+        }
+      }
+    }
+    
     for (const product of products) {
       // Фільтр по категорії (якщо вибрано)
       if (selectedCategory) {
@@ -265,7 +321,7 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
     }
     
     return rows;
-  }, [products, hideZeroStock, hidePartnerOffers, selectedCategory, client.priceType, clientPricingRules]);
+  }, [products, featuredProducts, showFeatured, hideZeroStock, hidePartnerOffers, selectedCategory, client.priceType, clientPricingRules]);
 
   // Групування рядків по товарах для rowspan
   const groupedRows = useMemo(() => {
@@ -327,8 +383,22 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
               >
                 {/* Колонка A ~75% */}
                 <div className="basis-[75%] flex flex-col gap-1 min-w-0">
-                  <div className="text-base font-semibold text-gray-900 leading-snug break-words">
-                    {row.name || 'Без назви'}
+                  <div className="flex items-start gap-1">
+                    <span className="flex-1 text-base font-semibold text-gray-900 leading-snug break-words">
+                      {row.name || 'Без назви'}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openGoogleSearch(row.name, row.id);
+                      }}
+                      className="flex-shrink-0 p-1 text-gray-400 hover:text-indigo-600 transition-colors"
+                      title="Пошук в Google"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </button>
                   </div>
                   <div className="text-xs text-gray-500/80 leading-snug truncate">
                     {row.id || ''}
@@ -339,7 +409,28 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
                 <div className="basis-[13%] min-w-[68px] flex flex-col justify-center items-end text-right">
                   <div className="text-base font-semibold text-gray-900">{priceText}</div>
                   <div className="text-xs text-gray-500/80">{`Наявність: ${stockText}`}</div>
-                  <div className={`text-[11px] font-medium ${availabilityClass}`}>{availabilityText}</div>
+                  <div className={`text-[11px] font-medium ${availabilityClass} flex items-center gap-1`}>
+                    {availabilityText}
+                    {row.supplier !== 'Мій склад' && (
+                      <div className="relative group">
+                        <svg 
+                          xmlns="http://www.w3.org/2000/svg" 
+                          className="h-3.5 w-3.5 text-amber-500 cursor-help" 
+                          fill="none" 
+                          viewBox="0 0 24 24" 
+                          stroke="currentColor"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        {/* Tooltip */}
+                        <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none">
+                          <div className="whitespace-pre-wrap">{getSupplierComment(row.supplier)}</div>
+                          {/* Стрілка */}
+                          <div className="absolute top-full right-4 border-4 border-transparent border-t-gray-900"></div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Колонка C ~12% */}
@@ -403,7 +494,21 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
                           {group.product.id}
                         </td>
                         <td rowSpan={rowspan} className="px-3 py-2 align-top text-sm break-words border border-gray-300">
-                          {group.product.name}
+                          <div className="flex items-start gap-2">
+                            <span className="flex-1">{group.product.name}</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openGoogleSearch(group.product.name, group.product.id);
+                              }}
+                              className="flex-shrink-0 p-1 text-gray-400 hover:text-indigo-600 transition-colors"
+                              title="Пошук в Google"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                              </svg>
+                            </button>
+                          </div>
                         </td>
                       </>
                     )}
@@ -411,7 +516,26 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
                       {row.supplier === 'Мій склад' ? (
                         <span className="text-green-600 font-semibold">Склад</span>
                       ) : (
-                        <span className="text-gray-600">Партнер</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-600">Партнер</span>
+                          <div className="relative group">
+                            <svg 
+                              xmlns="http://www.w3.org/2000/svg" 
+                              className="h-4 w-4 text-amber-500 cursor-help" 
+                              fill="none" 
+                              viewBox="0 0 24 24" 
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            {/* Tooltip */}
+                            <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none">
+                              <div className="whitespace-pre-wrap">{getSupplierComment(row.supplier)}</div>
+                              {/* Стрілка */}
+                              <div className="absolute top-full left-4 border-4 border-transparent border-t-gray-900"></div>
+                            </div>
+                          </div>
+                        </div>
                       )}
                     </td>
                     <td className="px-3 py-2 align-top whitespace-nowrap font-semibold text-sm border border-gray-300">

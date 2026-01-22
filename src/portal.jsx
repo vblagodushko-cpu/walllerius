@@ -180,19 +180,23 @@ function Toast({ message, onClose, onViewCart }) {
 
 /** Cart drawer */
 function CartDrawer({ open, onClose, items, onChangeQty, onRemove, onPlaceOrder, placing, selectedCurrency = 'EUR', uahRate = null }) {
-  const total = useMemo(() => {
-    let sum = items.reduce((s,i) => s + Number(i.price||0) * Number(i.quantity||0), 0);
-    
-    // Конвертація валюти (якщо вибрано UAH)
+  const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
+  
+  // Конвертуємо ціни при відображенні
+  const getDisplayPrice = (basePriceEUR) => {
     if (selectedCurrency === 'UAH' && uahRate && uahRate > 0) {
-      sum = sum * uahRate;
-      sum = Math.round(sum * 100) / 100;
+      return Math.round(basePriceEUR * uahRate * 100) / 100;
     }
-    
-    return sum;
+    return basePriceEUR;
+  };
+  
+  const total = useMemo(() => {
+    return items.reduce((s, i) => {
+      const displayPrice = getDisplayPrice(Number(i.price || 0));
+      return s + displayPrice * Number(i.quantity || 0);
+    }, 0);
   }, [items, selectedCurrency, uahRate]);
   
-  const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
   return (
     <div className={`fixed inset-0 z-40 ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open}>
       <div className={`absolute inset-0 bg-black/30 transition-opacity ${open ? 'opacity-100' : 'opacity-0'}`} onClick={onClose}/>
@@ -206,31 +210,27 @@ function CartDrawer({ open, onClose, items, onChangeQty, onRemove, onPlaceOrder,
           <p className="text-gray-500">Кошик порожній.</p>
         ) : (
           <div className="space-y-3 overflow-y-auto h-[70vh] pr-1">
-            {items.map((it, idx) => (
-              <div key={it.docId + ':' + idx} className="border rounded-lg p-3">
-                <div className="flex justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{it.brand} — {it.name}</div>
-                    <div className="text-xs text-gray-500">арт. {it.id}</div>
-                    <div className="text-sm mt-1">Ціна: <b>{(() => {
-                      let price = Number(it.price || 0);
-                      if (selectedCurrency === 'UAH' && uahRate && uahRate > 0) {
-                        price = price * uahRate;
-                        price = Math.round(price * 100) / 100;
-                      }
-                      return `${price.toFixed(2)} ${currencySymbol}`;
-                    })()}</b></div>
+            {items.map((it, idx) => {
+              const displayPrice = getDisplayPrice(Number(it.price || 0));
+              return (
+                <div key={it.docId + ':' + idx} className="border rounded-lg p-3">
+                  <div className="flex justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{it.brand} — {it.name}</div>
+                      <div className="text-xs text-gray-500">арт. {it.id}</div>
+                      <div className="text-sm mt-1">Ціна: <b>{displayPrice.toFixed(2)} {currencySymbol}</b></div>
+                    </div>
+                    <button className="text-red-600 text-sm" onClick={() => onRemove(it.docId)}>× Видалити</button>
                   </div>
-                  <button className="text-red-600 text-sm" onClick={() => onRemove(it.docId)}>× Видалити</button>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button className="px-2 py-1 rounded bg-gray-100" onClick={() => onChangeQty(it.docId, Math.max(1, (it.quantity||1)-1))}>−</button>
+                    <input type="number" className="w-16 p-1 border rounded text-center" value={it.quantity||1} min={1}
+                      onChange={(e)=> onChangeQty(it.docId, Math.max(1, Number(e.target.value)||1))}/>
+                    <button className="px-2 py-1 rounded bg-gray-100" onClick={() => onChangeQty(it.docId, (it.quantity||1)+1)}>+</button>
+                  </div>
                 </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button className="px-2 py-1 rounded bg-gray-100" onClick={() => onChangeQty(it.docId, Math.max(1, (it.quantity||1)-1))}>−</button>
-                  <input type="number" className="w-16 p-1 border rounded text-center" value={it.quantity||1} min={1}
-                    onChange={(e)=> onChangeQty(it.docId, Math.max(1, Number(e.target.value)||1))}/>
-                  <button className="px-2 py-1 rounded bg-gray-100" onClick={() => onChangeQty(it.docId, (it.quantity||1)+1)}>+</button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -264,6 +264,11 @@ function PortalApp() {
   const [settlements, setSettlements] = useState(null);
   const [view, setView] = useState('products');
   const [clientPricingRules, setClientPricingRules] = useState(null);
+
+  // Featured products
+  const [featuredProducts, setFeaturedProducts] = useState([]);
+  const [featuredProductsData, setFeaturedProductsData] = useState([]);
+  const [showFeatured, setShowFeatured] = useState(false);
 
   // Товари
   const [products, setProducts] = useState([]);
@@ -610,8 +615,8 @@ function PortalApp() {
           }
         });
         setBalances({
-          UAH: Number(map.UAH || 0),
-          EUR: Number(map.EUR || 0)
+          UAH: -Number(map.UAH || 0), // Інвертуємо баланс
+          EUR: -Number(map.EUR || 0)   // Інвертуємо баланс
         });
         setHasBalances(!balancesSnap.empty);
     
@@ -640,9 +645,97 @@ function PortalApp() {
     return () => unsub();
   }, []);
 
+  // Завантаження featured products
+  useEffect(() => {
+    if (!user) return;
+    
+    const loadFeatured = async () => {
+      try {
+        const featuredRef = doc(db, `/artifacts/${appId}/public/data/featuredProducts/main`);
+        const featuredSnap = await getDoc(featuredRef);
+        
+        if (featuredSnap.exists()) {
+          const data = featuredSnap.data();
+          let items = data.items || [];
+          
+          // Сортуємо від свіжододаних (найновіші спочатку)
+          items.sort((a, b) => {
+            const aTime = a.addedAt?.seconds || a.addedAt?._seconds || 0;
+            const bTime = b.addedAt?.seconds || b.addedAt?._seconds || 0;
+            return bTime - aTime; // Від новіших до старіших
+          });
+          
+          setFeaturedProducts(items);
+          // НЕ встановлюємо showFeatured тут, бо товари ще не завантажені
+          
+          // Завантажуємо повні дані товарів, зберігаючи порядок сортування
+          const productPromises = items.map(async (item, index) => {
+            try {
+              // Шукаємо товар по brand та id (артикул)
+              const productsQuery = query(
+                collection(db, `/artifacts/${appId}/public/data/products`),
+                where("brand", "==", item.brand),
+                where("id", "==", item.id),
+                limit(1)
+              );
+              const productSnap = await getDocs(productsQuery);
+              if (!productSnap.empty) {
+                const productDoc = productSnap.docs[0];
+                return { 
+                  docId: productDoc.id, 
+                  ...productDoc.data(), 
+                  isFeatured: true,
+                  featuredIndex: index, // Зберігаємо індекс для сортування
+                  featuredAddedAt: item.addedAt // Зберігаємо дату додавання
+                };
+              }
+              return null;
+            } catch (e) {
+              logger.warn("Failed to load featured product", item.brand, item.id, e);
+              return null;
+            }
+          });
+          
+          const products = (await Promise.all(productPromises))
+            .filter(p => p !== null)
+            .sort((a, b) => {
+              // Сортуємо за featuredIndex (від свіжододаних)
+              return (a.featuredIndex || 0) - (b.featuredIndex || 0);
+            });
+          
+          // Встановлюємо showFeatured ТІЛЬКИ якщо є завантажені товари з offers
+          setFeaturedProductsData(products);
+          // Перевіряємо, чи є товари з offers (без offers вони не відображаються)
+          const productsWithOffers = products.filter(p => p.offers && Array.isArray(p.offers) && p.offers.length > 0);
+          const hasProducts = productsWithOffers.length > 0;
+          setShowFeatured(hasProducts);
+          logger.info(`Featured products loaded: ${products.length} out of ${items.length} items, ${productsWithOffers.length} with offers, showFeatured=${hasProducts}`);
+        } else {
+          setFeaturedProducts([]);
+          setFeaturedProductsData([]);
+          setShowFeatured(false);
+        }
+      } catch (e) {
+        logger.error("Failed to load featured products", e);
+        setFeaturedProducts([]);
+        setFeaturedProductsData([]);
+        setShowFeatured(false);
+      }
+    };
+    
+    loadFeatured();
+  }, [user]);
+
   const handleAddToCart = (product, price, quantity) => {
     // Отримуємо supplier з product (якщо передано selectedSupplier)
     const supplier = product.selectedSupplier || 'Мій склад';
+    
+    // Конвертуємо ціну назад в EUR для зберігання (якщо зараз UAH)
+    let basePriceEUR = price;
+    if (selectedCurrency === 'UAH' && uahRate && uahRate > 0) {
+      basePriceEUR = price / uahRate;
+      basePriceEUR = Math.round(basePriceEUR * 100) / 100;
+    }
     
     setCart(cur => {
       // Перевіряємо по docId + supplier (один товар може бути від різних постачальників)
@@ -652,7 +745,7 @@ function PortalApp() {
         ? cur.map(i => (i.docId === product.docId && i.supplier === supplier) 
           ? { ...i, quantity: i.quantity + quantity } 
           : i)
-                : [...cur, { ...product, supplier, price, quantity }];
+                : [...cur, { ...product, supplier, price: basePriceEUR, quantity }];
       
       // Показуємо toast повідомлення
       const productName = product.name || 'Товар';
@@ -683,9 +776,14 @@ function PortalApp() {
     try {
       const call = httpsCallable(functions, 'placeOrderV2');
       const payload = {
-        items: cartItems, total: orderTotal,
+        items: cartItems,
+        total: orderTotal,
         clientRequestId: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
-        clientName: safeClient.name ?? null, clientPhone: safeClient.phone ?? null, clientEmail: user?.email ?? null,
+        clientName: safeClient.name ?? null,
+        clientPhone: safeClient.phone ?? null,
+        clientEmail: user?.email ?? null,
+        // Передаємо категорію ціни клієнта, щоб бекенд коректно застосував політику
+        priceCategory: safeClient.priceType || 'ціна 1',
       };
       await call(payload);
       setCart([]); setIsCartVisible(false);
@@ -780,8 +878,13 @@ function PortalApp() {
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
       <header className="bg-white border-b mb-4 p-4 flex items-center justify-between rounded-lg flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="text-lg font-semibold">ApexDrive</div>
+        <div className="flex items-center gap-2">
+          <a href="https://olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
+            <img src="/logo.png" alt="Olimp Auto" className="h-14" />
+          </a>
+          <a href="https://oil.olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
+            <img src="/oil-logo.png" alt="OIL Portal" className="h-14" />
+          </a>
         </div>
         
         {/* Пошук по артикулу - між заголовком та балансом */}
@@ -1095,6 +1198,8 @@ function PortalApp() {
                 selectedCategory={selectedCategory}
                 selectedCurrency={selectedCurrency}
                 uahRate={uahRate}
+                featuredProducts={featuredProductsData}
+                showFeatured={showFeatured && !selectedBrand && !selectedGroup && !selectedCategory}
           />
               {hasMore && !isFetchingProducts && (
                 <div className="text-center mt-4">
@@ -1118,6 +1223,8 @@ function PortalApp() {
             onFetchMore={handleLoadMoreOrders}
             hasMore={hasMoreOrders}
             isFetchingMore={isLoadingMoreOrders}
+            selectedCurrency={selectedCurrency}
+            uahRate={uahRate}
           />
         )}
 
