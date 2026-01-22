@@ -100,3 +100,27 @@ test-*.js
 checkAdmin.*
 setAdminClaim.*
 generateEmailVerificationLink.*
+
+# Temporary code fragments (prevent accidental commits)
+({
+(x
+{
+10)
+200
+batch.delete*
+existingDocsMap.set*
+existingProductsMap.set*
+logger.error*
+processSupplierPriceList*
+r.document_date
+s.trim().toLowerCase*
+firebase
+new
+npm
+v
+sum
+WARNING
+*.txt
+# But keep important .txt files if needed
+!README.txt
+!CHANGELOG.txt
