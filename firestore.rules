@@ -1,0 +1,111 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Допоміжні функції ---
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function isAdmin() {
+      // Перевірка наявності токена та кастомного права 'admin'
+      return isAuthed() && request.auth.token.admin == true;
+    }
+
+    // --- Основний шлях до даних проєкту ---
+    match /artifacts/{appId} {
+
+      // --- 1. ПРИВАТНІ ДАНІ ---
+      // ВАЖЛИВО: Виняток має бути ПЕРЕД загальним правилом
+      // importJobs - адміни можуть читати та створювати для відстеження статусу імпорту
+      match /private/data/importJobs/{jobId} {
+        allow read: if isAdmin();
+        allow create: if isAdmin(); // Дозволити створення на фронтенді
+        allow update, delete: if false; // Оновлення тільки через Cloud Functions
+      }
+      
+      // Явно і повністю забороняємо будь-який доступ з клієнтської сторони.
+      // Доступ до цих даних має тільки Admin SDK у Cloud Functions.
+      match /private/{path=**} {
+        allow read, write: if false;
+      }
+
+      // --- 2. ПУБЛІЧНІ ДАНІ ---
+      match /public/data {
+
+        // Синоніми брендів: читання доступне авторизованим, запис лише адміну
+        match /brandSynonyms/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+
+        // Майстер-дані товарів: читання доступне авторизованим, запис лише адміну
+        match /productMasterData/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+
+        // Клієнти: читати може адмін або власник свого профілю.
+        // Оновлювати може власник, створювати/видаляти - тільки адмін.
+        match /clients/{clientId} {
+          allow read: if isAdmin() || (isAuthed() && uid() == clientId);
+          allow update: if isAuthed() && uid() == clientId;
+          allow create, delete: if isAdmin();
+        }
+        
+        // Взаєморозрахунки: читати може тільки власник. Запис заборонено.
+        match /settlements/{clientId}/{path=**} {
+           allow read: if isAuthed() && uid() == clientId;
+           allow write: if false; // Запис тільки з бекенду
+        }
+
+        // Замовлення: створювати може клієнт для себе.
+        // Читати - власник або адмін. Оновлювати/видаляти - тільки адмін.
+        match /orders/{orderId} {
+          allow create: if isAuthed() && request.resource.data.clientId == uid();
+          allow read: if isAdmin() || (isAuthed() && resource.data.clientId == uid());
+          allow update, delete: if isAdmin();
+        }
+
+        // Товари, постачальники, правила націнок:
+        // Читання доступне тільки авторизованим користувачам
+        match /products/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+        match /suppliers/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+        match /pricingRules/{docId} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+        }
+        
+        // Заявки на реєстрацію та відновлення пароля
+        match /registrationRequests/{requestId} {
+          allow create: if true; // Будь-хто може створювати заявки (неавторизовані користувачі)
+          allow read, delete: if isAdmin(); // Читати та видаляти може тільки адмін
+          allow update: if false; // Оновлення заборонено (заявки не оновлюються)
+        }
+      }
+      
+      // --- 3. ПУБЛІЧНІ МЕТАДАНІ (напр. лічильники) ---
+      // Читання доступне тільки авторизованим користувачам
+       match /public/meta/{path=**} {
+          allow read: if isAuthed();
+          allow write: if isAdmin();
+       }
+    }
+
+    // Правило, що блокує доступ до будь-яких інших шляхів, не описаних вище.
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

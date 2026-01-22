@@ -1,0 +1,27 @@
+{
+  "name": "roza-app-vite",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "dev:host": "vite --host 0.0.0.0 --port 5173 --strictPort",
+    "preview:open": "vite preview --port 4173 --strictPort --open"
+  },
+  "dependencies": {
+    "firebase": "^10.12.5",
+    "firebase-admin": "^13.5.0",
+    "firebase-functions": "^6.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.13",
+    "vite": "^4.5.14"
+  }
+}
