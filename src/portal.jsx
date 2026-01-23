@@ -278,9 +278,7 @@ function PortalApp() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Смарт-панель
-  const [smartPanelMode, setSmartPanelMode] = useState(() => {
-    try { return localStorage.getItem('portal_smartPanelMode') || 'groups'; } catch { return 'groups'; }
-  }); // 'groups' | 'brands'
+  const [smartPanelMode, setSmartPanelMode] = useState('groups'); // 'groups' | 'brands'
   const [selectedGroup, setSelectedGroup] = useState(null); // groupId
   const [selectedBrand, setSelectedBrand] = useState(null); // brandName
   const [expandedGroup, setExpandedGroup] = useState(null); // groupId або null
@@ -292,52 +290,16 @@ function PortalApp() {
   const [categories, setCategories] = useState([]); // [{id, name, slug, order}]
 
   // Фільтри для відображення товарів (клієнтська дорізка)
-  const [hideZeroStock, setHideZeroStock] = useState(() => {
-    try { return localStorage.getItem('portal_hideZeroStock') === 'true'; } catch { return false; }
+  const [showOnlyInStock, setShowOnlyInStock] = useState(() => {
+    const saved = localStorage.getItem('showOnlyInStock');
+    return saved === 'true';
   });
-  const [hidePartnerOffers, setHidePartnerOffers] = useState(() => {
-    try { return localStorage.getItem('portal_hidePartnerOffers') === 'true'; } catch { return false; }
+  const [showOnlyPartners, setShowOnlyPartners] = useState(() => {
+    const saved = localStorage.getItem('showOnlyPartners');
+    return saved === 'true';
   });
-  const [selectedCategory, setSelectedCategory] = useState(() => {
-    try { const saved = localStorage.getItem('portal_selectedCategory'); return saved || null; } catch { return null; }
-  }); // Категорія для фільтрації
-
-  // Збереження налаштувань фільтрів в localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('portal_hideZeroStock', String(hideZeroStock));
-    } catch (e) {
-      console.warn('Failed to save hideZeroStock to localStorage', e);
-    }
-  }, [hideZeroStock]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('portal_hidePartnerOffers', String(hidePartnerOffers));
-    } catch (e) {
-      console.warn('Failed to save hidePartnerOffers to localStorage', e);
-    }
-  }, [hidePartnerOffers]);
-
-  useEffect(() => {
-    try {
-      if (selectedCategory) {
-        localStorage.setItem('portal_selectedCategory', selectedCategory);
-      } else {
-        localStorage.removeItem('portal_selectedCategory');
-      }
-    } catch (e) {
-      console.warn('Failed to save selectedCategory to localStorage', e);
-    }
-  }, [selectedCategory]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('portal_smartPanelMode', smartPanelMode);
-    } catch (e) {
-      console.warn('Failed to save smartPanelMode to localStorage', e);
-    }
-  }, [smartPanelMode]);
+  const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
+  const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
 
   // Кеш товарів по брендах (ключ: brandName, значення: { products, lastDoc, hasMore })
   const brandCacheRef = useRef(new Map());
@@ -368,6 +330,7 @@ function PortalApp() {
       setLastDocSnap(null);
       setHasMore(false);
       setIsFetchingProducts(false);
+      setIsArticleSearchActive(false);
       return;
     }
 
@@ -457,6 +420,7 @@ function PortalApp() {
       setLastDocSnap(null);
       setHasMore(false);
       setIsFetchingProducts(false);
+      setIsArticleSearchActive(false);
       return;
     }
     
@@ -748,13 +712,11 @@ function PortalApp() {
               return (a.featuredIndex || 0) - (b.featuredIndex || 0);
             });
           
-          // Встановлюємо showFeatured ТІЛЬКИ якщо є завантажені товари з offers
+          // Встановлюємо showFeatured ТІЛЬКИ якщо є завантажені товари
           setFeaturedProductsData(products);
-          // Перевіряємо, чи є товари з offers (без offers вони не відображаються)
-          const productsWithOffers = products.filter(p => p.offers && Array.isArray(p.offers) && p.offers.length > 0);
-          const hasProducts = productsWithOffers.length > 0;
+          const hasProducts = products.length > 0;
           setShowFeatured(hasProducts);
-          logger.info(`Featured products loaded: ${products.length} out of ${items.length} items, ${productsWithOffers.length} with offers, showFeatured=${hasProducts}`);
+          logger.info(`Featured products loaded: ${products.length} out of ${items.length} items, showFeatured=${hasProducts}`);
         } else {
           setFeaturedProducts([]);
           setFeaturedProductsData([]);
@@ -770,6 +732,25 @@ function PortalApp() {
     
     loadFeatured();
   }, [user]);
+
+  // Скидаємо флаг активного пошуку при зміні фільтрів
+  useEffect(() => {
+    if (selectedBrand || selectedGroup || selectedCategory) {
+      setIsArticleSearchActive(false);
+    }
+  }, [selectedBrand, selectedGroup, selectedCategory]);
+
+  // Скидаємо флаг активного пошуку при зміні тумблерів
+  useEffect(() => {
+    setIsArticleSearchActive(false);
+  }, [showOnlyInStock, showOnlyPartners]);
+
+  // Скидаємо флаг активного пошуку при очищенні поля пошуку
+  useEffect(() => {
+    if (!articleSearch.trim() && isArticleSearchActive) {
+      setIsArticleSearchActive(false);
+    }
+  }, [articleSearch, isArticleSearchActive]);
 
   const handleAddToCart = (product, price, quantity) => {
     // Отримуємо supplier з product (якщо передано selectedSupplier)
@@ -900,6 +881,8 @@ function PortalApp() {
         setView('products');
         // Замінюємо список товарів результатами пошуку
         setProducts(data.products);
+        // Встановлюємо флаг активного пошуку
+        setIsArticleSearchActive(true);
         if (data.foundViaSynonym) {
           logger.debug(`Знайдено через синонім. Канонічний артикул: ${data.canonicalArticle}`);
         }
@@ -907,11 +890,13 @@ function PortalApp() {
         // При помилці - порожній список
         setView('products');
         setProducts([]);
+        setIsArticleSearchActive(false);
       }
     } catch (e) {
       logger.error('Помилка пошуку:', e);
       setView('products');
       setProducts([]);
+      setIsArticleSearchActive(false);
     } finally {
       setIsSearchingArticle(false);
     }
@@ -987,20 +972,22 @@ function PortalApp() {
           {/* Фільтри для відображення товарів - тільки для розділу "Товари" */}
           {view === 'products' && (
             <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 bg-indigo-50 border border-black rounded-lg px-3 py-2 shadow-sm">
-              <span className="text-sm font-medium text-gray-700 whitespace-nowrap">ПРИХОВАТИ:</span>
-              
-              {/* Toggle для "Нульові" */}
+              {/* Toggle для "Наявні" */}
               <label className="flex items-center gap-2 cursor-pointer">
                 <div className="relative inline-flex items-center">
                   <input
                     type="checkbox"
-                    checked={hideZeroStock}
-                    onChange={(e) => setHideZeroStock(e.target.checked)}
+                    checked={showOnlyInStock}
+                    onChange={(e) => {
+                      const value = e.target.checked;
+                      setShowOnlyInStock(value);
+                      localStorage.setItem('showOnlyInStock', String(value));
+                    }}
                     className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
           </div>
-                <span className="text-sm text-gray-700 whitespace-nowrap">Нульові</span>
+                <span className="text-sm text-gray-700 whitespace-nowrap">Наявні</span>
               </label>
 
               {/* Toggle для "Партнери" */}
@@ -1008,8 +995,12 @@ function PortalApp() {
                 <div className="relative inline-flex items-center">
                   <input
                     type="checkbox"
-                    checked={hidePartnerOffers}
-                    onChange={(e) => setHidePartnerOffers(e.target.checked)}
+                    checked={showOnlyPartners}
+                    onChange={(e) => {
+                      const value = e.target.checked;
+                      setShowOnlyPartners(value);
+                      localStorage.setItem('showOnlyPartners', String(value));
+                    }}
                     className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
@@ -1238,13 +1229,26 @@ function PortalApp() {
             client={safeClient}
             suppliers={suppliers}
             onAddToCart={handleAddToCart}
-                hideZeroStock={hideZeroStock}
-                hidePartnerOffers={hidePartnerOffers}
+                showOnlyInStock={showOnlyInStock}
+                showOnlyPartners={showOnlyPartners}
                 selectedCategory={selectedCategory}
                 selectedCurrency={selectedCurrency}
                 uahRate={uahRate}
                 featuredProducts={featuredProductsData}
-                showFeatured={showFeatured && !selectedBrand && !selectedGroup && !selectedCategory}
+                isArticleSearchActive={isArticleSearchActive}
+                showFeatured={(() => {
+                  const shouldShow = showFeatured && !selectedBrand && !selectedGroup && !selectedCategory;
+                  console.log('[Portal] Featured products check:', {
+                    showFeatured,
+                    selectedBrand,
+                    selectedGroup,
+                    selectedCategory,
+                    shouldShow,
+                    featuredCount: featuredProductsData.length,
+                    hasProducts: products.length
+                  });
+                  return shouldShow;
+                })()}
           />
               {hasMore && !isFetchingProducts && (
                 <div className="text-center mt-4">

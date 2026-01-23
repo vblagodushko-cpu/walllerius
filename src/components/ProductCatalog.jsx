@@ -58,7 +58,7 @@ const AddToCartModal = ({ product, onAddToCart, onClose }) => {
   );
 };
 
-const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStock = false, hidePartnerOffers = false, selectedCategory = null, clientPricingRules = null, selectedCurrency = 'EUR', uahRate = null, featuredProducts = [], showFeatured = false }) => {
+const ProductCatalog = ({ products, client, onAddToCart, suppliers, showOnlyInStock = false, showOnlyPartners = false, selectedCategory = null, clientPricingRules = null, selectedCurrency = 'EUR', uahRate = null, featuredProducts = [], showFeatured = false, isArticleSearchActive = false }) => {
   const [selectedProduct, setSelectedProduct] = useState(null);
   
   // Функція для відкриття пошуку в Google
@@ -215,20 +215,29 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
     
     // Додаємо featured products на початок, якщо showFeatured = true
     if (showFeatured && featuredProducts && featuredProducts.length > 0) {
+      console.log('[ProductCatalog] Showing featured products:', featuredProducts.length, 'products');
+      let skippedNoOffers = 0;
       for (const product of featuredProducts) {
         if (!product.offers || !Array.isArray(product.offers)) {
+          skippedNoOffers++;
+          console.log('[ProductCatalog] Skipping featured product (no offers):', product.brand, product.id);
           continue;
         }
         
         // Фільтрація offers для featured products
         let filteredOffers = product.offers;
         
-        if (hidePartnerOffers) {
-          filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
-        }
-        
-        if (hideZeroStock) {
-          filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
+        // Ігноруємо тумблери при активному пошуку по артикулу
+        if (!isArticleSearchActive) {
+          if (!showOnlyPartners) {
+            // Тумблер вимкнений - показуємо тільки склад
+            filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
+          }
+          // Тумблер увімкнений - показуємо все (склад + партнери), не фільтруємо
+          
+          if (showOnlyInStock) {
+            filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
+          }
         }
         
         if (filteredOffers.length === 0) continue;
@@ -261,6 +270,14 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
           });
         }
       }
+      if (skippedNoOffers > 0) {
+        console.log(`[ProductCatalog] Skipped ${skippedNoOffers} featured products without offers`);
+      }
+    } else if (featuredProducts && featuredProducts.length > 0) {
+      console.log('[ProductCatalog] Featured products NOT showing because:', {
+        showFeatured,
+        featuredProductsLength: featuredProducts.length
+      });
     }
     
     for (const product of products) {
@@ -279,14 +296,18 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
       // Фільтрація offers
       let filteredOffers = product.offers;
       
-      // Фільтр: приховати партнерів
-      if (hidePartnerOffers) {
-        filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
-      }
-      
-      // Фільтр: приховати нульові залишки
-      if (hideZeroStock) {
-        filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
+      // Ігноруємо тумблери при активному пошуку по артикулу
+      if (!isArticleSearchActive) {
+        if (!showOnlyPartners) {
+          // Тумблер вимкнений - показуємо тільки склад
+          filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
+        }
+        // Тумблер увімкнений - показуємо все (склад + партнери), не фільтруємо
+        
+        // Фільтр: показувати тільки наявні
+        if (showOnlyInStock) {
+          filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
+        }
       }
       
       if (filteredOffers.length === 0) continue;
@@ -321,7 +342,7 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
     }
     
     return rows;
-  }, [products, featuredProducts, showFeatured, hideZeroStock, hidePartnerOffers, selectedCategory, client.priceType, clientPricingRules]);
+  }, [products, featuredProducts, showFeatured, showOnlyInStock, showOnlyPartners, selectedCategory, client.priceType, clientPricingRules, isArticleSearchActive]);
 
   // Групування рядків по товарах для rowspan
   const groupedRows = useMemo(() => {
@@ -342,6 +363,7 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
             brand: row.brand,
             id: row.id,
             name: row.name,
+            isFeatured: row.isFeatured || false,
           },
           offers: [row],
         };
@@ -384,6 +406,11 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
                 {/* Колонка A ~75% */}
                 <div className="basis-[75%] flex flex-col gap-1 min-w-0">
                   <div className="flex items-start gap-1">
+                    {row.isFeatured && (
+                      <span className="flex-shrink-0 text-amber-500" title="Рекомендований товар">
+                        📌
+                      </span>
+                    )}
                     <span className="flex-1 text-base font-semibold text-gray-900 leading-snug break-words">
                       {row.name || 'Без назви'}
                     </span>
@@ -495,6 +522,11 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, hideZeroStoc
                         </td>
                         <td rowSpan={rowspan} className="px-3 py-2 align-top text-sm break-words border border-gray-300">
                           <div className="flex items-start gap-2">
+                            {group.product.isFeatured && (
+                              <span className="flex-shrink-0 text-amber-500" title="Рекомендований товар">
+                                📌
+                              </span>
+                            )}
                             <span className="flex-1">{group.product.name}</span>
                             <button
                               onClick={(e) => {

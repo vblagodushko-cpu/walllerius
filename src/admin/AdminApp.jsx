@@ -31,9 +31,9 @@ const NAV = [
   { key: "purchases", label: "ЗАКУПКИ",        page: null }, // Обробляється окремо
   { key: "suppliers", label: "Постачальники",  page: <Placeholder title="Постачальники" /> },
   { key: "export",    label: "Експорт",        page: <Placeholder title="Експорт" /> },
-  { key: "orders-export", label: "Вигрузка замовлень", page: null }, // Обробляється окремо
   { key: "clients",   label: "Клієнти",        page: null }, // Обробляється окремо
   { key: "data",      label: "Дані",           page: <DataPage /> },
+  { key: "ordersExport", label: "Вигрузка замовлень", page: null }, // Обробляється окремо
 ];
 
 export default function AdminApp() {
@@ -205,12 +205,12 @@ export default function AdminApp() {
       {/* Тут підміняємо сторінки, яким треба setStatus */}
       {current.key === "purchases"
         ? <PurchasesPage setStatus={setStatus} />
+        : current.key === "ordersExport"
+        ? <OrdersExportPage setStatus={setStatus} />
         : current.key === "suppliers"
         ? <SuppliersPage setStatus={setStatus} />
         : current.key === "export"
         ? <ExportPage setStatus={setStatus} />
-        : current.key === "orders-export"
-        ? <OrdersExportPage setStatus={setStatus} />
         : current.key === "clients"
         ? <ClientsPage initialTab={pendingRequestsCount > 0 && !notificationDismissed ? "requests" : "clients"} setStatus={setStatus} />
         : current.page}
