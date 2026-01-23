@@ -490,40 +490,31 @@ exports.placeOrderV2 = onCall({
   };
 
   // Helper функція для обчислення ціни з правилами
-  // Повертає об'єкт: { price, priceGroup, defaultPriceGroup, hasAdjustment }
   const calculatePriceWithRules = (product, offer, defaultPriceGroup) => {
     if (!offer || !offer.publicPrices) {
-      return {
-        price: 0,
-        priceGroup: defaultPriceGroup || "роздріб",
-        defaultPriceGroup: defaultPriceGroup || "роздріб",
-        hasAdjustment: false
-      };
+      return { price: 0, priceGroup: defaultPriceGroup || "роздріб", defaultPriceGroup: defaultPriceGroup || "роздріб", hasAdjustment: false };
     }
 
     // Стартуємо з defaultPriceGroup (наприклад, client.priceType або переданий priceCategory)
     let priceGroup = defaultPriceGroup || "роздріб";
     let adjustment = 0;
-    let hasRuleAdjustment = false;
+    const originalDefaultPriceGroup = defaultPriceGroup || "роздріб";
     
     if (clientPricingRules && clientPricingRules.rules) {
       const productRule = findRule(clientPricingRules, "product", product.brand, product.id, null);
       if (productRule) {
         priceGroup = productRule.priceGroup;
         adjustment = Number(productRule.adjustment || 0);
-        hasRuleAdjustment = adjustment !== 0;
       } else {
         const brandRule = findRule(clientPricingRules, "brand", product.brand, null, null);
         if (brandRule) {
           priceGroup = brandRule.priceGroup;
           adjustment = Number(brandRule.adjustment || 0);
-          hasRuleAdjustment = adjustment !== 0;
         } else {
           const supplierRule = findRule(clientPricingRules, "supplier", null, null, offer.supplier);
           if (supplierRule) {
             priceGroup = supplierRule.priceGroup;
             adjustment = Number(supplierRule.adjustment || 0);
-            hasRuleAdjustment = adjustment !== 0;
           }
         }
       }
@@ -533,12 +524,7 @@ exports.placeOrderV2 = onCall({
     if (!basePrice || basePrice <= 0) {
       basePrice = offer.publicPrices.роздріб;
       if (!basePrice || basePrice <= 0) {
-        return {
-          price: 0,
-          priceGroup: defaultPriceGroup || "роздріб",
-          defaultPriceGroup: defaultPriceGroup || "роздріб",
-          hasAdjustment: false
-        };
+        return { price: 0, priceGroup: originalDefaultPriceGroup, defaultPriceGroup: originalDefaultPriceGroup, hasAdjustment: false };
       }
     }
     
@@ -546,7 +532,7 @@ exports.placeOrderV2 = onCall({
     // Застосовуємо персональний adjustment (може бути негативним для знижки або позитивним для націнки)
     price = price * (1 + adjustment/100);
     
-    // Перевіряємо загальний adjustment
+    // Застосовуємо загальний adjustment
     let hasGlobalAdjustment = false;
     if (clientPricingRules) {
       const globalAdjustment = Number(clientPricingRules.globalAdjustment || 0);
@@ -556,13 +542,12 @@ exports.placeOrderV2 = onCall({
       }
     }
     
-    const finalPrice = Math.ceil(price * 100) / 100;
-    const hasAdjustment = hasRuleAdjustment || hasGlobalAdjustment;
+    const hasAdjustment = adjustment !== 0 || hasGlobalAdjustment;
     
     return {
-      price: finalPrice,
+      price: Math.ceil(price * 100) / 100,
       priceGroup: priceGroup,
-      defaultPriceGroup: defaultPriceGroup || "роздріб",
+      defaultPriceGroup: originalDefaultPriceGroup,
       hasAdjustment: hasAdjustment
     };
   };
@@ -629,6 +614,9 @@ exports.placeOrderV2 = onCall({
           unitPrice = retail ?? 0;
         }
       }
+      priceGroup = category;
+      defaultPriceGroup = category;
+      hasAdjustment = false;
       
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.js:566',message:'placeOrderV2: price calculation fallback',data:{docId:meta.docId,category,unitPrice},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
@@ -1538,34 +1526,8 @@ exports.deleteAllSettlements = require("./maintenance").deleteAllSettlements;
 exports.weeklyRebuildBrandsCache = require("./maintenance").weeklyRebuildBrandsCache;
 
 // Compose other modules (auth / suppliers / ukrsklad / settlements)
-// Використовуємо try-catch для сумісності, але логуємо помилки детальніше
-try { 
-  Object.assign(exports, require("./auth")); 
-} catch (e) { 
-  logger.warn("auth module not found or failed to load", String(e));
-  if (e.stack) logger.warn("auth module error stack", e.stack);
-}
-try { 
-  Object.assign(exports, require("./suppliers")); 
-} catch (e) { 
-  logger.warn("suppliers module not found or failed to load", String(e));
-  if (e.stack) logger.warn("suppliers module error stack", e.stack);
-}
-try { 
-  Object.assign(exports, require("./ukrsklad")); 
-} catch (e) { 
-  logger.warn("ukrsklad module not found or failed to load", String(e));
-  if (e.stack) logger.warn("ukrsklad module error stack", e.stack);
-}
-try { 
-  Object.assign(exports, require("./settlements")); 
-} catch (e) { 
-  logger.warn("settlements module not found or failed to load", String(e));
-  if (e.stack) logger.warn("settlements module error stack", e.stack);
-}
-try { 
-  Object.assign(exports, require("./warehouse")); 
-} catch (e) { 
-  logger.warn("warehouse module not found or failed to load", String(e));
-  if (e.stack) logger.warn("warehouse module error stack", e.stack);
-}
+try { Object.assign(exports, require("./auth")); } catch (e) { logger.warn("auth module not found", String(e)); }
+try { Object.assign(exports, require("./suppliers")); } catch (e) { logger.warn("suppliers module not found", String(e)); }
+try { Object.assign(exports, require("./ukrsklad")); } catch (e) { logger.warn("ukrsklad module not found", String(e)); }
+try { Object.assign(exports, require("./settlements")); } catch (e) { logger.warn("settlements module not found", String(e)); }
+try { Object.assign(exports, require("./warehouse")); } catch (e) { logger.warn("warehouse module not found", String(e)); }

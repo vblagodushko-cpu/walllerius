@@ -336,19 +336,42 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                     <td className="px-2 py-1.5 text-right text-xs">
                       <div className="flex flex-col items-end">
                         <span>{convertPrice(unitPrice).toFixed(2)} {currencySymbol}</span>
-                        {/* Підказка про adjustment (пріоритет) */}
-                        {it.hasAdjustment && (
-                          <span className="text-xs text-red-600 font-medium mt-0.5">
-                            Увага СПЕЦІАЛЬНА
-                          </span>
-                        )}
-                        {/* Підказка про нестандартну групу цін (якщо немає adjustment) */}
-                        {!it.hasAdjustment && it.priceGroup && it.defaultPriceGroup && 
-                         it.priceGroup !== it.defaultPriceGroup && (
-                          <span className="text-xs text-red-600 font-medium mt-0.5">
-                            {it.priceGroup}
-                          </span>
-                        )}
+                        {(() => {
+                          // Підсвітка нестандартної цінової політики
+                          const itemPriceGroup = it.priceGroup || it.defaultPriceGroup;
+                          const itemDefaultPriceGroup = it.defaultPriceGroup;
+                          const itemHasAdjustment = it.hasAdjustment;
+                          const isSupplierOrder = it.supplier && it.supplier !== "Мій склад";
+                          
+                          // Якщо товар замовлений у постачальника - завжди показуємо "УВАГА спеціальна"
+                          if (isSupplierOrder) {
+                            return (
+                              <span className="text-[10px] font-semibold text-red-600 mt-0.5">
+                                УВАГА спеціальна
+                              </span>
+                            );
+                          }
+                          
+                          // Показуємо "Увага СПЕЦІАЛЬНА" якщо є adjustment
+                          if (itemHasAdjustment) {
+                            return (
+                              <span className="text-[10px] font-semibold text-red-600 mt-0.5">
+                                Увага СПЕЦІАЛЬНА
+                              </span>
+                            );
+                          }
+                          
+                          // Показуємо назву цінової групи якщо вона відрізняється від стандартної
+                          if (itemPriceGroup && itemDefaultPriceGroup && itemPriceGroup !== itemDefaultPriceGroup) {
+                            return (
+                              <span className="text-[10px] font-medium text-amber-600 mt-0.5">
+                                {itemPriceGroup}
+                              </span>
+                            );
+                          }
+                          
+                          return null;
+                        })()}
                       </div>
                     </td>
                     {/* Залишок */}
