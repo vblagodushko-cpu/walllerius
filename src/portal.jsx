@@ -912,7 +912,12 @@ function PortalApp() {
           <a href="https://olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
             <img src="/logo.png" alt="Olimp Auto" className="h-14" />
           </a>
-          <a href="https://oil.olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
+          <a
+            href="https://fuchs-eu.lubricantadvisor.com/uk"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center"
+          >
             <img src="/oil-logo.png" alt="OIL Portal" className="h-14" />
           </a>
         </div>
