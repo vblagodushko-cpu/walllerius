@@ -93,6 +93,11 @@ service cloud.firestore {
           allow write: if isAdmin();
         }
         
+        // Замовлення на закупку: тільки адміни можуть читати, створювати та оновлювати
+        match /purchaseOrders/{orderId} {
+          allow read, write: if isAdmin();
+        }
+        
         // Заявки на реєстрацію та відновлення пароля
         match /registrationRequests/{requestId} {
           allow create: if true; // Будь-хто може створювати заявки (неавторизовані користувачі)
