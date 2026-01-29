@@ -1160,7 +1160,7 @@ function PortalApp() {
                           </button>
                           {isExpanded && groupType === 'preset' && group.brands && group.brands.length > 1 && (
                             <div className="border-t border-gray-200">
-                              {group.brands.map((brandName, idx) => (
+                              {[...(group.brands || [])].sort((a, b) => String(a).localeCompare(String(b), 'uk')).map((brandName, idx) => (
                                 <button
                                   key={idx}
                                   className={`w-full text-left px-3 py-1.5 text-sm ${selectedBrand === brandName ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-gray-50'}`}
