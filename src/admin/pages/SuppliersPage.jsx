@@ -974,7 +974,7 @@ export default function SuppliersPage({ setStatus }) {
   };
 
   return (
-    <div className="bg-white p-6 rounded-2xl shadow">
+    <div className="bg-white rounded-2xl shadow p-3 sm:p-6">
       
       {/* Hidden file input */}
       <input
@@ -1013,7 +1013,7 @@ export default function SuppliersPage({ setStatus }) {
         />
       )}
 
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <h2 className="text-2xl font-semibold">Постачальники</h2>
         <button className={primary} onClick={()=>setEditing({})}>Додати постачальника</button>
       </div>

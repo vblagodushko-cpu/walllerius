@@ -316,8 +316,14 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                       <div className="flex items-center gap-1">
                         <span>{it.id}</span>
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(it.id || '');
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(it.id || '');
+                              setStatus?.({ type: "success", message: "Артикул скопійовано" });
+                            } catch (e) {
+                              setStatus?.({ type: "error", message: "Не вдалося скопіювати" });
+                            }
                           }}
                           className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors"
                           title="Копіювати артикул"
@@ -490,7 +496,7 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
 }
 
 /* --------------------------------- Page ---------------------------------- */
-export default function OrdersPage() {
+export default function OrdersPage({ setStatus: globalSetStatus }) {
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "new" | "partial" | "completed" | "archived"
   const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('adminSelectedCurrency') || 'EUR');
   const [uahRate, setUahRate] = useState(null);
@@ -555,8 +561,8 @@ export default function OrdersPage() {
   }, [status]);
 
   return (
-    <div className="bg-white rounded-2xl shadow p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-3">
         <h2 className="text-lg font-semibold">Замовлення</h2>
         {status && (
           <div
@@ -721,7 +727,7 @@ export default function OrdersPage() {
           order={modalOrder}
           onClose={() => setModalOrder(null)}
           onSaved={() => pager.reloadFirst?.() || pager.loadFirst()}
-          setStatus={setStatus}
+          setStatus={globalSetStatus ?? setStatus}
           selectedCurrency={selectedCurrency}
           uahRate={uahRate}
         />

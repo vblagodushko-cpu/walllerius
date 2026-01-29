@@ -2,7 +2,7 @@ import React from "react";
 
 export default function TopNav({ items, value, onChange, orderCounts, pendingRequestsCount = 0 }) {
   return (
-    <nav className="flex items-center gap-2">
+    <nav className="flex items-center gap-2 overflow-x-auto pb-1 -mx-2 px-2 whitespace-nowrap">
       {items.map((it) => {
         const isOrders = it.key === "orders";
         const isClients = it.key === "clients";
@@ -15,7 +15,7 @@ export default function TopNav({ items, value, onChange, orderCounts, pendingReq
             key={it.key}
             onClick={() => onChange(it.key)}
             className={[
-              "px-4 py-2 rounded-xl text-sm relative",
+              "px-4 py-2 rounded-xl text-sm relative flex-shrink-0",
               value === it.key ? "bg-indigo-600 text-white" : "bg-gray-100 hover:bg-gray-200"
             ].join(" ")}
           >

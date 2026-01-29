@@ -583,8 +583,8 @@ export default function ProductsPage() {
   ];
   
   return (
-    <div className="bg-white rounded-2xl shadow p-4">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-4">
         <h2 className="text-xl font-semibold">Товари</h2>
         <Tabs items={tabsItems} value={activeTab} onChange={setActiveTab} />
       </div>

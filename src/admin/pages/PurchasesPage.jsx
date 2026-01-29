@@ -30,6 +30,8 @@ export default function PurchasesPage({ setStatus }) {
         return {
           products: state.products || [],
           expandedProducts: new Set(state.expandedProducts || []),
+          suppliers: state.suppliers || [],
+          ordersByProduct: state.ordersByProduct || {},
         };
       }
     } catch (e) {
@@ -38,6 +40,8 @@ export default function PurchasesPage({ setStatus }) {
     return {
       products: [],
       expandedProducts: new Set(),
+      suppliers: [],
+      ordersByProduct: {},
     };
   };
 
@@ -48,8 +52,8 @@ export default function PurchasesPage({ setStatus }) {
   const [sortBy, setSortBy] = useState("brand");
   const [sortOrder, setSortOrder] = useState("asc");
   const [expandedProducts, setExpandedProducts] = useState(initialState.expandedProducts);
-  const [suppliers, setSuppliers] = useState([]);
-  const [ordersByProduct, setOrdersByProduct] = useState({});
+  const [suppliers, setSuppliers] = useState(initialState.suppliers);
+  const [ordersByProduct, setOrdersByProduct] = useState(initialState.ordersByProduct);
 
   // Стан модалки створення/редагування замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -57,6 +61,7 @@ export default function PurchasesPage({ setStatus }) {
     supplierId: "",
     quantity: "",
     price: "",
+    currency: "EUR",
   });
 
   // Збереження стану в localStorage
@@ -65,7 +70,9 @@ export default function PurchasesPage({ setStatus }) {
       const stateToSave = {
         products: state.products,
         expandedProducts: Array.from(state.expandedProducts),
-        lastLoadTimestamp: Date.now(),
+        suppliers: state.suppliers,
+        ordersByProduct: state.ordersByProduct,
+        lastLoadTimestamp: state.lastLoadTimestamp ?? Date.now(),
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
     } catch (e) {
@@ -78,8 +85,10 @@ export default function PurchasesPage({ setStatus }) {
     saveStateToStorage({
       products,
       expandedProducts,
+      suppliers,
+      ordersByProduct,
     });
-  }, [products, expandedProducts, saveStateToStorage]);
+  }, [products, expandedProducts, suppliers, ordersByProduct, saveStateToStorage]);
 
   // Завантаження товарів для закупівлі
   const loadPurchases = useCallback(async () => {
@@ -286,6 +295,16 @@ export default function PurchasesPage({ setStatus }) {
     return name.length > 15 ? name.substring(0, 12) + "..." : name;
   };
 
+  const copyArticle = async (article) => {
+    if (!article) return;
+    try {
+      await navigator.clipboard.writeText(String(article));
+      setStatus?.({ type: "success", message: "Артикул скопійовано" });
+    } catch (e) {
+      setStatus?.({ type: "error", message: "Не вдалося скопіювати" });
+    }
+  };
+
   // Допоміжні функції для замовлень
   const getOrdersForProduct = (productDocId) => {
     return ordersByProduct[productDocId] || [];
@@ -304,10 +323,18 @@ export default function PurchasesPage({ setStatus }) {
 
   const openOrderModal = (product) => {
     setOrderModalProduct(product);
+    const orderedQty = getOrderedQty(product.docId);
+    const needed = (product.minStock ?? 0) - (product.stock ?? 0) - orderedQty;
+    const quantity = String(Math.max(1, needed));
+    const price =
+      product.incomingPrice != null && product.incomingPrice > 0
+        ? Number(product.incomingPrice).toFixed(2)
+        : "";
     setOrderForm({
       supplierId: "",
-      quantity: "",
-      price: "",
+      quantity,
+      price,
+      currency: "EUR",
     });
   };
 
@@ -346,7 +373,7 @@ export default function PurchasesPage({ setStatus }) {
           supplierName: supplier.name || supplier.id,
           quantity,
           price,
-          currency: "EUR",
+          currency: orderForm.currency,
           status: "open",
           createdAt: serverTimestamp(),
         }
@@ -367,7 +394,7 @@ export default function PurchasesPage({ setStatus }) {
             supplierName: supplier.name || supplier.id,
             quantity,
             price,
-            currency: "EUR",
+            currency: orderForm.currency,
             status: "open",
           },
         ];
@@ -421,8 +448,8 @@ export default function PurchasesPage({ setStatus }) {
   };
 
   return (
-    <div className="bg-white rounded-2xl shadow p-4">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <h2 className="text-lg font-semibold">ЗАКУПКИ</h2>
         <div className="flex items-center gap-3">
           <div className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded border border-amber-200">
@@ -513,7 +540,21 @@ export default function PurchasesPage({ setStatus }) {
                     <React.Fragment key={product.docId}>
                       <tr className={`border-t ${orders.length ? "bg-yellow-50" : ""}`}>
                         <td className="px-3 py-2 whitespace-nowrap">{product.brand}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">{product.id}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            <span>{product.id}</span>
+                            <button
+                              type="button"
+                              className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors"
+                              title="Копіювати артикул"
+                              onClick={() => copyArticle(product.id)}
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
                         <td className="px-3 py-2">{product.name || "—"}</td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <div className="flex flex-col">
@@ -712,9 +753,24 @@ export default function PurchasesPage({ setStatus }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700">
-                    Ціна (EUR)
-                  </label>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-sm font-medium text-slate-700">
+                      Ціна ({orderForm.currency === "UAH" ? "ГРН" : "EUR"})
+                    </label>
+                    <select
+                      className="text-xs border rounded px-2 py-1 text-slate-600"
+                      value={orderForm.currency}
+                      onChange={(e) =>
+                        setOrderForm((prev) => ({
+                          ...prev,
+                          currency: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="EUR">EUR</option>
+                      <option value="UAH">ГРН</option>
+                    </select>
+                  </div>
                   <input
                     type="number"
                     min="0"

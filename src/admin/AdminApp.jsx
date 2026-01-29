@@ -190,7 +190,7 @@ export default function AdminApp() {
 
       {status && (
         <div
-          className={`mb-4 p-2 rounded ${
+          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-lg shadow-lg ${
             status.type === "error"
               ? "bg-red-100 text-red-800"
               : status.type === "success"
@@ -203,7 +203,9 @@ export default function AdminApp() {
       )}
 
       {/* Тут підміняємо сторінки, яким треба setStatus */}
-      {current.key === "purchases"
+      {current.key === "orders"
+        ? <OrdersPage setStatus={setStatus} />
+        : current.key === "purchases"
         ? <PurchasesPage setStatus={setStatus} />
         : current.key === "ordersExport"
         ? <OrdersExportPage setStatus={setStatus} />

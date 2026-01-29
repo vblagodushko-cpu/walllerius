@@ -317,11 +317,11 @@ export default function ClientsPage({ initialTab = "clients", setStatus }) {
       <div className="mb-4">
         <Tabs items={tabsItems} value={activeTab} onChange={setActiveTab} />
       </div>
-      <div className="bg-white rounded-2xl shadow p-4">
-        <div className="flex items-center justify-between mb-3 gap-2">
+      <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 gap-2">
           <h2 className="text-lg font-semibold">Клієнти</h2>
           <input
-            className="p-2 border rounded min-w-[320px]"
+            className="p-2 border rounded w-full sm:min-w-[320px]"
             placeholder="Пошук: код, телефон або назва — Enter"
             value={search}
             onChange={(e)=>setSearch(e.target.value)}
