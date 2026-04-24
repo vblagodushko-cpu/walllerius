@@ -355,8 +355,14 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
   const [comment, setComment] = useState(initial?.comment || "");
   const [updateMethod, setUpdateMethod] = useState(initial?.updateMethod || "manual"); // manual | auto_url
   const [priceListUrl, setPriceListUrl] = useState(initial?.priceListUrl || "");
-  const [schedule, setSchedule] = useState(initial?.schedule || ""); // Cron schedule
+  const [schedule, setSchedule] = useState(initial?.schedule || ""); // Cron schedule (для збереження)
   const [autoUpdate, setAutoUpdate] = useState(initial?.autoUpdate !== false); // За замовчуванням true
+  const [filterPriceListByMasterData, setFilterPriceListByMasterData] = useState(initial?.filterPriceListByMasterData === true);
+  
+  // UI state для розкладу
+  const [scheduleHour, setScheduleHour] = useState(8);
+  const [scheduleMinute, setScheduleMinute] = useState(0);
+  const [scheduleDays, setScheduleDays] = useState([1,2,3,4,5]); // Пн-Пт за замовчуванням
 
   // Markups: роздріб, ціна 1, ціна 2, ціна 3, ціна опт
   const [mRetail, setMRetail] = useState(initial?.rules?.["роздріб"] ?? "");
@@ -364,6 +370,77 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
   const [m2, setM2] = useState(initial?.rules?.["ціна 2"] ?? "");
   const [m3, setM3] = useState(initial?.rules?.["ціна 3"] ?? "");
   const [mOpt, setMOpt] = useState(initial?.rules?.["ціна опт"] ?? "");
+
+  // Парсинг cron виразу у UI стан
+  const parseScheduleToUI = (cronStr) => {
+    if (!cronStr || !cronStr.trim()) {
+      setScheduleHour(8);
+      setScheduleMinute(0);
+      setScheduleDays([1,2,3,4,5]);
+      return;
+    }
+    const parts = cronStr.trim().split(/\s+/);
+    if (parts.length >= 5) {
+      const minute = Number(parts[0]) || 0;
+      const hour = Number(parts[1]) || 8;
+      setScheduleMinute(minute);
+      setScheduleHour(hour);
+      
+      // Парсинг днів: "1-5" -> [1,2,3,4,5], "*" -> [1,2,3,4,5,6,7], "0,6" -> [0,6]
+      const daysPart = parts[4];
+      let days = [];
+      if (daysPart === "*") {
+        days = [1,2,3,4,5,6,7];
+      } else if (daysPart.includes("-")) {
+        const [start, end] = daysPart.split("-").map(Number);
+        days = Array.from({length: end-start+1}, (_,i) => start+i);
+      } else if (daysPart.includes(",")) {
+        days = daysPart.split(",").map(Number);
+      } else {
+        days = [Number(daysPart)];
+      }
+      setScheduleDays(days);
+    }
+  };
+
+  // Генерація cron виразу з UI стану
+  const generateScheduleFromUI = () => {
+    const minute = scheduleMinute;
+    const hour = scheduleHour;
+    let daysStr = "*";
+    
+    if (scheduleDays.length === 0) {
+      daysStr = "*"; // Якщо нічого не обрано - всі дні
+    } else {
+      const sortedDays = [...scheduleDays].sort((a,b) => a-b);
+      const sortedStr = sortedDays.join(",");
+      
+      if (sortedDays.length === 7 && sortedStr === "0,1,2,3,4,5,6") {
+        daysStr = "*"; // Всі дні
+      } else if (sortedDays.length === 5 && sortedStr === "1,2,3,4,5") {
+        daysStr = "1-5"; // Будні (Пн-Пт)
+      } else if (sortedDays.length === 2 && sortedStr === "0,6") {
+        daysStr = "0,6"; // Вихідні (Нд, Сб)
+      } else {
+        daysStr = sortedStr;
+      }
+    }
+    
+    return `${minute} ${hour} * * ${daysStr}`;
+  };
+
+  // Парсинг при завантаженні постачальника
+  useEffect(() => {
+    if (initial?.schedule) {
+      parseScheduleToUI(initial.schedule);
+    } else {
+      // Якщо немає розкладу - встановлюємо дефолтні значення
+      setScheduleHour(8);
+      setScheduleMinute(0);
+      setScheduleDays([1,2,3,4,5]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial?.id]); // Парсимо тільки при зміні постачальника
 
   const deleteImportConfig = async () => {
     if (!confirm("Видалити збережену конфігурацію імпорту?")) return;
@@ -382,11 +459,19 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
   const save = async (e) => {
   e.preventDefault();
   try {
+    // Валідація: якщо увімкнено автоматичне оновлення, має бути обрано хоча б один день
+    if (autoUpdate && scheduleDays.length === 0) {
+      setStatus?.({ type: "error", message: "Оберіть хоча б один день тижня для автоматичного оновлення" });
+      return;
+    }
+
     const id = initial?.id || doc(collection(db, `/artifacts/${appId}/public/data/suppliers`)).id;
 
     // 1) сам постачальник
+    const scheduleToSave = autoUpdate ? generateScheduleFromUI() : null;
     await setDoc(doc(db, `/artifacts/${appId}/public/data/suppliers`, id), {
-      id, name, comment, updateMethod, priceListUrl, schedule: schedule.trim() || null, autoUpdate
+      id, name, comment, updateMethod, priceListUrl, schedule: scheduleToSave, autoUpdate,
+      filterPriceListByMasterData: filterPriceListByMasterData || false
     }, { merge: true });
 
     // 2) правила ціноутворення — пишемо і map, і плоскі UA-ключі + supplierId
@@ -449,6 +534,22 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
           </div>
         </div>
 
+        {/* Фільтр прайсу по мастерданих */}
+        <div className="border-t pt-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterPriceListByMasterData}
+              onChange={(e) => setFilterPriceListByMasterData(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span className="text-sm font-medium">Фільтрувати прайс по мастерданих</span>
+          </label>
+          <p className="text-xs text-slate-500 mt-1 ml-6">
+            При імпорті зберігати лише позиції, які є в мастерданих (мастила); позиції без мастерданих не зберігати і видалити з каталогу для цього постачальника.
+          </p>
+        </div>
+
         {/* Update method/URL — інформаційний блок (кнопки винесені у список) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t pt-4">
           <div>
@@ -479,19 +580,75 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
             
             {autoUpdate && (
               <>
-                <div>
-                  <label className="block text-sm mb-1">
-                    Розклад (cron формат: <code className="text-xs bg-slate-100 px-1 rounded">хвилина година * * дні</code>)
-                  </label>
-                  <input 
-                    className="mt-1 w-full p-2 border rounded font-mono text-sm" 
-                    value={schedule} 
-                    onChange={e=>setSchedule(e.target.value)} 
-                    placeholder="30 8 * * 1-5"
-                  />
-                  <p className="text-xs text-slate-500 mt-1">
-                    Приклад: <code className="bg-slate-100 px-1 rounded">30 8 * * 1-5</code> = щодня о 8:30 у будні
-                  </p>
+                <div className="space-y-3">
+                  <label className="block text-sm font-medium">Час оновлення</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">Година</label>
+                      <select 
+                        className="w-full p-2 border rounded"
+                        value={scheduleHour}
+                        onChange={e => setScheduleHour(Number(e.target.value))}
+                      >
+                        {Array.from({length: 24}, (_, i) => (
+                          <option key={i} value={i}>{String(i).padStart(2, '0')}:00</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">Хвилина</label>
+                      <select 
+                        className="w-full p-2 border rounded"
+                        value={scheduleMinute}
+                        onChange={e => setScheduleMinute(Number(e.target.value))}
+                      >
+                        <option value={0}>00</option>
+                        <option value={15}>15</option>
+                        <option value={30}>30</option>
+                        <option value={45}>45</option>
+                      </select>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-2">Дні тижня</label>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        {value: 1, label: 'Пн'},
+                        {value: 2, label: 'Вт'},
+                        {value: 3, label: 'Ср'},
+                        {value: 4, label: 'Чт'},
+                        {value: 5, label: 'Пт'},
+                        {value: 6, label: 'Сб'},
+                        {value: 0, label: 'Нд'}
+                      ].map(day => (
+                        <label key={day.value} className="flex items-center gap-1 cursor-pointer px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">
+                          <input
+                            type="checkbox"
+                            checked={scheduleDays.includes(day.value)}
+                            onChange={e => {
+                              if (e.target.checked) {
+                                setScheduleDays([...scheduleDays, day.value]);
+                              } else {
+                                setScheduleDays(scheduleDays.filter(d => d !== day.value));
+                              }
+                            }}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-sm">{day.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {scheduleDays.length === 0 && (
+                      <p className="text-xs text-red-500 mt-1">Оберіть хоча б один день тижня</p>
+                    )}
+                  </div>
+                  
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-2">
+                    <p className="text-xs text-slate-600">
+                      Розклад: <code className="bg-white px-1.5 py-0.5 rounded font-mono text-xs">{generateScheduleFromUI()}</code>
+                    </p>
+                  </div>
                 </div>
                 
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
@@ -499,6 +656,9 @@ function SupplierModal({ initial, onClose, onSaved, setStatus }) {
                   <p className="text-xs text-orange-700">
                     Краще налаштовувати завантаження в будь-який час <strong>крім проміжку 10:00-17:00</strong>, 
                     особливо на початку години (10:00, 11:00, 12:00...), щоб уникнути конфліктів з UkrSklad синхронізацією.
+                  </p>
+                  <p className="text-xs text-orange-700 mt-1">
+                    <strong>Важливо:</strong> Планувальник запускається щогодини о :00. Для надійності використовуйте час на початку години (00, 15, 30, 45 хвилин).
                   </p>
                 </div>
               </>
@@ -943,6 +1103,9 @@ export default function SuppliersPage({ setStatus }) {
           }
           if (result.removed > 0) {
             message += ` Видалено ${result.removed} товарів з нульовою наявністю.`;
+          }
+          if (result.filteredOut != null && result.filteredOut > 0) {
+            message += ` Пропущено по мастерданих: ${result.filteredOut}.`;
           }
           
           setStatus?.({ type: "success", message });

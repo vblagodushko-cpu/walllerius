@@ -120,14 +120,26 @@ async function buildPublicPrices(purchase, supplierId) {
 async function processAndSaveProducts(rows, supplier) {
   const supplierNorm = normalizeSupplier(supplier?.name || supplier?.id || "manual");
   const supplierId = String(supplier?.id || supplierNorm);
+
+  // Читання прапорця постачальника: зберігати лише позиції з мастерданих
+  let filterByMaster = false;
+  try {
+    const supplierRef = db.doc(`/artifacts/${APP_ID}/public/data/suppliers/${supplierId}`);
+    const supplierSnap = await supplierRef.get();
+    if (supplierSnap.exists) {
+      filterByMaster = supplierSnap.data()?.filterPriceListByMasterData === true;
+    }
+  } catch (e) {
+    logger.warn("Could not read supplier filterPriceListByMasterData", { supplierId, error: e.message });
+  }
   
-  // Обмеження на кількість товарів
-  const MAX_PRODUCTS = 3000;
+  // Обмеження на кількість товарів: 100К при фільтрі по мастерданих, 3К — стандарт
+  const MAX_PRODUCTS = filterByMaster ? 100000 : 3000;
   if (rows.length > MAX_PRODUCTS) {
     throw new Error(`Перевищено обмеження: максимум ${MAX_PRODUCTS} товарів на прайс. Знайдено: ${rows.length}. Будь ласка, розбийте прайс на частини.`);
   }
   
-  let ok = 0, skipped = 0, removed = 0;
+  let ok = 0, skipped = 0, removed = 0, filteredOut = 0;
 
   // Крок 1: Нормалізація та збір ключів (оптимізація)
   const normalizedProductKeys = new Set(); // brand-article
@@ -208,6 +220,12 @@ async function processAndSaveProducts(rows, supplier) {
       const publicPrices = await buildPublicPrices(price, supplierId);
       const masterData = await getProductMasterData(normalizedBrand, article);
       
+      // Якщо увімкнено фільтр по мастерданих — зберігаємо лише позиції, які є в мастерданих (або по синоніму)
+      if (filterByMaster && !masterData) {
+        filteredOut++;
+        continue;
+      }
+      
       // Використовуємо канонічний id з masterData, якщо він є, інакше оригінальний з рядка
       const rawId = row.id || row.code || row.article || row.Артикул || row.Код || row.артикул || row.код;
       const productId = masterData?.id || rawId;
@@ -257,6 +275,7 @@ async function processAndSaveProducts(rows, supplier) {
     ok, 
     skipped, 
     removed, 
+    filteredOut: filterByMaster ? filteredOut : undefined,
     total: rows.length,
     supplier: supplierNorm
   });
@@ -297,7 +316,31 @@ async function processAndSaveProducts(rows, supplier) {
     }
   }
 
-  return { ok, skipped, removed, total: rows.length };
+  // Cleanup 2 (при фільтрі по мастерданих): видалити пропозиції постачальника, яких немає в мастерданих
+  if (filterByMaster) {
+    for (const doc of supplierProductsSnap.docs) {
+      const spData = doc.data();
+      const productDocId = spData.productDocId;
+      if (!productDocId) continue;
+      try {
+        const productDoc = await productsCol.doc(productDocId).get();
+        if (!productDoc.exists) continue;
+        const pData = productDoc.data();
+        const inMaster = await getProductMasterData(pData.brand, pData.id);
+        if (!inMaster) {
+          await removeProduct({
+            supplier: supplierNorm,
+            id: pData.id,
+            brand: pData.brand
+          });
+        }
+      } catch (e) {
+        logger.warn("Failed to remove non-master offer", { productDocId, error: e.message });
+      }
+    }
+  }
+
+  return { ok, skipped, removed, filteredOut: filterByMaster ? filteredOut : undefined, total: rows.length };
 }
 
 async function parseCsvFromUrlUtf8_STRICT(url) {
@@ -385,8 +428,16 @@ exports.importSupplierCsv = onCall({
   // читаємо CSV строго за порядком колонок
   const rows = await parseCsvFromUrlUtf8_STRICT(url);
 
-  // Перевірка обмеження
-  const MAX_PRODUCTS = 3000;
+  // Ліміт: 100К при фільтрі по мастерданих, 3К — стандарт
+  const supplierId = String(supplier?.id || supplier?.name || "url");
+  let filterByMaster = false;
+  try {
+    const supplierSnap = await db.doc(`/artifacts/${APP_ID}/public/data/suppliers/${supplierId}`).get();
+    if (supplierSnap.exists) filterByMaster = supplierSnap.data()?.filterPriceListByMasterData === true;
+  } catch (e) {
+    logger.warn("Could not read supplier filterPriceListByMasterData for limit", { supplierId, error: e.message });
+  }
+  const MAX_PRODUCTS = filterByMaster ? 100000 : 3000;
   if (rows.length > MAX_PRODUCTS) {
       const error = `Перевищено обмеження: максимум ${MAX_PRODUCTS} товарів на прайс. Знайдено: ${rows.length}. Будь ласка, розбийте прайс на частини.`;
       if (jobRef) {
@@ -482,8 +533,16 @@ exports.manualPriceListUpdate = onCall({
 
   const sup = supplier?.id ? supplier : { id: supplier?.id || supplier?.name || "manual", name: supplier?.name || "manual" };
   
-  // Перевірка обмеження
-  const MAX_PRODUCTS = 3000;
+  // Ліміт: 100К при фільтрі по мастерданих, 3К — стандарт
+  const supplierId = String(sup?.id || "manual");
+  let filterByMaster = false;
+  try {
+    const supplierSnap = await db.doc(`/artifacts/${APP_ID}/public/data/suppliers/${supplierId}`).get();
+    if (supplierSnap.exists) filterByMaster = supplierSnap.data()?.filterPriceListByMasterData === true;
+  } catch (e) {
+    logger.warn("Could not read supplier filterPriceListByMasterData for limit", { supplierId, error: e.message });
+  }
+  const MAX_PRODUCTS = filterByMaster ? 100000 : 3000;
   if (rows && rows.length > MAX_PRODUCTS) {
     throw new HttpsError(
       "invalid-argument",
@@ -564,7 +623,7 @@ function shouldUpdateBySchedule(schedule, lastUpdateTime) {
 exports.priceUpdateScheduler = onSchedule(
   {
     region: REGION,
-    schedule: "0 7 * * 1-5",   // 07:00 щодня у будні (Europe/Kyiv) - до UkrSklad синхронізації
+    schedule: "0 * * * 1-5",   // щогодини о :00 у будні (Europe/Kyiv) — кожен постачальник оновлюється раз на день у свій час
     timeZone: "Europe/Kyiv",
     maxInstances: 1,  // Обмеження: тільки один екземпляр одночасно
     timeoutSeconds: 540,

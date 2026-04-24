@@ -8,6 +8,8 @@ import {
   limit,
   doc,
   getDoc,
+  addDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
@@ -20,6 +22,17 @@ if (!appId) {
 }
 const MAX_PRODUCTS = 300;
 
+/** Тип ціни «вхідна» — оцінка як у PurchasesPage: роздріб × коефіцієнт */
+const PRICE_TYPE_INCOMING = "вхідна";
+const INCOMING_FROM_RETAIL_COEF = 0.66667;
+
+function estimateIncomingFromRetail(publicPrices) {
+  if (!publicPrices || typeof publicPrices !== "object") return null;
+  const retail = Number(publicPrices["роздріб"]) || 0;
+  if (retail <= 0) return null;
+  return Math.round(retail * INCOMING_FROM_RETAIL_COEF * 100) / 100;
+}
+
 /**
  * Admin › ProductsPage
  * - Завантаження тільки по кнопці "Пошук" (без автоматичної загрузки)
@@ -27,7 +40,7 @@ const MAX_PRODUCTS = 300;
  * - Ліміт 300 товарів
  * - Відображення: один рядок на offer з об'єднаними комірками для бренду, артикулу та назви (rowspan)
  * - Сортування offers: спочатку "Мій склад", потім партнери по зростанню ціни
- * - Перемикач цінової політики (роздріб, ціна 1, ціна 2, ціна 3, ціна опт)
+ * - Перемикач цінової політики (вхідна за замовчуванням, роздріб, ціна 1–3, ціна опт)
  */
 export default function ProductsPage() {
   // Фільтри
@@ -35,7 +48,7 @@ export default function ProductsPage() {
   const [brandSearch, setBrandSearch] = useState(""); // Пошук по назві бренду
   const [articleSearch, setArticleSearch] = useState("");
   const [selectedSupplier, setSelectedSupplier] = useState("all"); // Клієнтська фільтрація
-  const [priceType, setPriceType] = useState("роздріб"); // Цінова політика
+  const [priceType, setPriceType] = useState(PRICE_TYPE_INCOMING); // Цінова політика (за замовчуванням — оцінка вхідної)
   
   // Клієнт та пошук
   const [selectedClient, setSelectedClient] = useState(null); // Вибраний клієнт
@@ -74,6 +87,17 @@ export default function ProductsPage() {
   const [featuredProductsData, setFeaturedProductsData] = useState([]); // Повні дані товарів
   const [loadingFeatured, setLoadingFeatured] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null); // {type: 'success'|'error', text: string}
+
+  // Модалка замовлення
+  const [orderModalProduct, setOrderModalProduct] = useState(null);
+  const [orderModalOffer, setOrderModalOffer] = useState(null); // Конкретна пропозиція
+  const [orderForm, setOrderForm] = useState({
+    supplierId: "",
+    quantity: "",
+    price: "",
+    currency: "EUR",
+  });
+  const [suppliers, setSuppliers] = useState([]);
 
   // Кеш товарів по брендах (ключ: brandId, значення: { products })
   const brandCacheRef = useRef(new Map());
@@ -253,6 +277,22 @@ export default function ProductsPage() {
     loadSuppliers();
   }, []);
 
+  // Завантаження повного списку постачальників для модалки замовлення
+  useEffect(() => {
+    const loadSuppliersForOrder = async () => {
+      try {
+        const snap = await getDocs(
+          collection(db, `/artifacts/${appId}/public/data/suppliers`)
+        );
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setSuppliers(list);
+      } catch (e) {
+        console.error("Помилка завантаження постачальників для замовлення:", e);
+      }
+    };
+    loadSuppliersForOrder();
+  }, []);
+
   // Функція нормалізації артикулу (як в shared.js)
   const normalizeArticle = (v) => {
     const s = String(v ?? "").trim().toUpperCase();
@@ -354,12 +394,17 @@ export default function ProductsPage() {
       }
     }
     
-    // 2. Беремо ціну з градації
-    let basePrice = offer.publicPrices[priceGroup];
-    if (!basePrice || basePrice <= 0) {
-      // Fallback на роздрібну, якщо градації немає
-      basePrice = offer.publicPrices.роздріб;
+    // 2. Базова ціна: оцінка вхідної (як у Закупках) або градація з publicPrices
+    let basePrice;
+    if (priceType === PRICE_TYPE_INCOMING) {
+      basePrice = estimateIncomingFromRetail(offer.publicPrices);
       if (!basePrice || basePrice <= 0) return 0;
+    } else {
+      basePrice = offer.publicPrices[priceGroup];
+      if (!basePrice || basePrice <= 0) {
+        basePrice = offer.publicPrices.роздріб;
+        if (!basePrice || basePrice <= 0) return 0;
+      }
     }
     
     // 3. Застосовуємо персональний adjustment
@@ -388,9 +433,91 @@ export default function ProductsPage() {
   // Функція для отримання ціни з publicPrices за обраною політикою
   const getPrice = useCallback((publicPrices, supplier) => {
     if (!publicPrices || typeof publicPrices !== "object") return null;
-    // Використовуємо publicPrices для всіх постачальників (включаючи "Мій склад")
+    if (priceType === PRICE_TYPE_INCOMING) {
+      return estimateIncomingFromRetail(publicPrices);
+    }
     return publicPrices[priceType] ?? null;
   }, [priceType]);
+
+  // Функції для модалки замовлення
+  const openOrderModal = useCallback((product, offer) => {
+    setOrderModalProduct(product);
+    setOrderModalOffer(offer);
+    
+    const incomingEst = estimateIncomingFromRetail(offer?.publicPrices);
+    const price =
+      offer?.price != null && offer.price > 0
+        ? Number(offer.price).toFixed(2)
+        : incomingEst != null && incomingEst > 0
+          ? incomingEst.toFixed(2)
+          : "";
+      
+    setOrderForm({
+      supplierId: offer?.supplier || "",
+      quantity: "1",
+      price,
+      currency: "EUR",
+    });
+  }, []);
+
+  const closeOrderModal = useCallback(() => {
+    setOrderModalProduct(null);
+    setOrderModalOffer(null);
+  }, []);
+
+  const handleCreateOrder = useCallback(async () => {
+    if (!orderModalProduct || !orderModalOffer) return;
+    
+    const supplier = suppliers.find(s => 
+      s.id === orderForm.supplierId || s.name === orderForm.supplierId
+    );
+    const quantity = Number(orderForm.quantity);
+    const price = Number(orderForm.price);
+
+    if (!supplier && !orderForm.supplierId) {
+      setStatusMessage({ type: "error", text: "Оберіть постачальника" });
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setStatusMessage({ type: "error", text: "Кількість має бути > 0" });
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      setStatusMessage({ type: "error", text: "Некоректна ціна" });
+      return;
+    }
+
+    try {
+      await addDoc(
+        collection(db, `/artifacts/${appId}/public/data/purchaseOrders`),
+        {
+          productDocId: orderModalProduct.docId,
+          productBrand: orderModalProduct.brand,
+          productId: orderModalProduct.id,
+          productName: orderModalProduct.name,
+          supplierId: supplier?.id || orderForm.supplierId,
+          supplierName: supplier?.name || orderForm.supplierId,
+          quantity,
+          price,
+          currency: orderForm.currency,
+          status: "open",
+          createdAt: serverTimestamp(),
+        }
+      );
+
+      setStatusMessage({
+        type: "success",
+        text: `Замовлення створено: ${supplier?.name || orderForm.supplierId}, ${quantity} шт.`,
+      });
+      closeOrderModal();
+    } catch (e) {
+      console.error("Помилка створення замовлення:", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Помилка створення замовлення",
+      });
+    }
+  }, [orderModalProduct, orderModalOffer, orderForm, suppliers, closeOrderModal]);
 
   // Функція пошуку товарів
   const handleSearch = useCallback(async () => {
@@ -516,6 +643,7 @@ export default function ProductsPage() {
           name: product.name || "",
           supplier: offer.supplier || "",
           stock: offer.stock ?? 0,
+          price: offer.price ?? null, // Вхідна (закупівельна) ціна
           publicPrices: offer.publicPrices || {},
           // Додаткові поля з offer (якщо є)
           ukrSkladId: offer.ukrSkladId,
@@ -936,6 +1064,7 @@ export default function ProductsPage() {
               value={priceType}
               onChange={(e) => setPriceType(e.target.value)}
             >
+              <option value={PRICE_TYPE_INCOMING}>Вхідна (оцінка)</option>
               <option value="роздріб">Роздріб</option>
               <option value="ціна 1">Ціна 1</option>
               <option value="ціна 2">Ціна 2</option>
@@ -1003,7 +1132,6 @@ export default function ProductsPage() {
                     {(() => {
                       let price;
                       if (selectedClient && clientPricingRules) {
-                        // Використовуємо ціну "від лиця" клієнта
                         const product = {
                           brand: row.brand,
                           id: row.id,
@@ -1015,7 +1143,6 @@ export default function ProductsPage() {
                         };
                         price = calculatePriceWithRules(product, offer);
                       } else {
-                        // Стандартна ціна
                         price = getPrice(row.publicPrices, row.supplier);
                       }
                       
@@ -1026,27 +1153,37 @@ export default function ProductsPage() {
                         : "—";
                     })()}
                   </td>
-                  {offerIndex === 0 && (
-                    <td rowSpan={rowspan} className="px-3 py-2 align-top">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      {offerIndex === 0 && (
+                        <button
+                          onClick={() => {
+                            if (isFeatured(group.product.brand, group.product.id)) {
+                              handleRemoveFeatured(group.product.brand, group.product.id);
+                            } else {
+                              handleAddFeatured(group.product.brand, group.product.id);
+                            }
+                          }}
+                          className={`px-2 py-1 rounded text-sm transition-colors ${
+                            isFeatured(group.product.brand, group.product.id)
+                              ? "bg-yellow-100 text-yellow-700 hover:bg-yellow-200"
+                              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                          }`}
+                          title={isFeatured(group.product.brand, group.product.id) ? "Видалити з рекомендованих" : "Додати до рекомендованих"}
+                        >
+                          {isFeatured(group.product.brand, group.product.id) ? "📌" : "📌"}
+                        </button>
+                      )}
+                      
                       <button
-                        onClick={() => {
-                          if (isFeatured(group.product.brand, group.product.id)) {
-                            handleRemoveFeatured(group.product.brand, group.product.id);
-                          } else {
-                            handleAddFeatured(group.product.brand, group.product.id);
-                          }
-                        }}
-                        className={`px-2 py-1 rounded text-sm transition-colors ${
-                          isFeatured(group.product.brand, group.product.id)
-                            ? "bg-yellow-100 text-yellow-700 hover:bg-yellow-200"
-                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                        }`}
-                        title={isFeatured(group.product.brand, group.product.id) ? "Видалити з рекомендованих" : "Додати до рекомендованих"}
+                        onClick={() => openOrderModal(group.product, row)}
+                        className="px-2 py-1 rounded text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors"
+                        title="Створити замовлення на закупку"
                       >
-                        {isFeatured(group.product.brand, group.product.id) ? "📌" : "📌"}
+                        🛒
                       </button>
-                    </td>
-                  )}
+                    </div>
+                  </td>
                 </tr>
               ));
             })}
@@ -1071,6 +1208,160 @@ export default function ProductsPage() {
           </div>
         </section>
       </div>
+      )}
+
+      {/* Модалка створення замовлення */}
+      {orderModalProduct && orderModalOffer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeOrderModal}
+          />
+          <div className="relative bg-white rounded-2xl shadow-xl w-[min(480px,96vw)] max-h-[90vh] overflow-auto">
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <h3 className="text-lg font-semibold">
+                Нове замовлення на закупку
+              </h3>
+              <button
+                className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-sm"
+                onClick={closeOrderModal}
+              >
+                Закрити
+              </button>
+            </div>
+            <div className="p-5 space-y-4 text-sm">
+              <div>
+                <div className="font-medium">
+                  {orderModalProduct.brand} • {orderModalProduct.id}
+                </div>
+                <div className="text-slate-500">
+                  {orderModalProduct.name}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <span className="text-slate-500">Постачальник:</span>
+                  <div className="font-medium">{orderModalOffer.supplier}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Наявність:</span>
+                  <div className="font-medium">{orderModalOffer.stock} шт.</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Вхідна (оцінка з роздрібу):</span>
+                  <div className="font-medium text-blue-600">
+                    {(() => {
+                      const est = estimateIncomingFromRetail(orderModalOffer.publicPrices);
+                      if (est != null && est > 0) return est.toFixed(2);
+                      if (orderModalOffer.price != null && orderModalOffer.price > 0) {
+                        return Number(orderModalOffer.price).toFixed(2);
+                      }
+                      return "—";
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t pt-4 space-y-3">
+                <div>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    Постачальник
+                  </label>
+                  <select
+                    className="w-full px-3 py-2 border rounded-lg"
+                    value={orderForm.supplierId}
+                    onChange={(e) =>
+                      setOrderForm((prev) => ({
+                        ...prev,
+                        supplierId: e.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Оберіть постачальника</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name || s.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Кількість
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full px-3 py-2 border rounded-lg"
+                      value={orderForm.quantity}
+                      onChange={(e) =>
+                        setOrderForm((prev) => ({
+                          ...prev,
+                          quantity: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Валюта
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border rounded-lg"
+                      value={orderForm.currency}
+                      onChange={(e) =>
+                        setOrderForm((prev) => ({
+                          ...prev,
+                          currency: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="EUR">EUR</option>
+                      <option value="USD">USD</option>
+                      <option value="UAH">UAH</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    Ціна за одиницю
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="w-full px-3 py-2 border rounded-lg"
+                    value={orderForm.price}
+                    onChange={(e) =>
+                      setOrderForm((prev) => ({
+                        ...prev,
+                        price: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm"
+                  onClick={closeOrderModal}
+                >
+                  Скасувати
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
+                  onClick={handleCreateOrder}
+                  disabled={!suppliers.length}
+                >
+                  Зберегти
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

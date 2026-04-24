@@ -1132,8 +1132,8 @@ function PortalApp() {
                                     }
                                   } else {
                                     // Розгортаємо нову групу (автоматично закриває попередню)
+                                    // Не встановлюємо selectedGroup — рекомендовані залишаються видимими до кліку на бренд
                                     setExpandedGroup(group.id);
-                                    setSelectedGroup(group.id);
                                   }
                                 }
                               } else if (groupType === 'category') {
@@ -1242,7 +1242,7 @@ function PortalApp() {
                 featuredProducts={featuredProductsData}
                 isArticleSearchActive={isArticleSearchActive}
                 showFeatured={(() => {
-                  const shouldShow = showFeatured && !selectedBrand && !selectedGroup && !selectedCategory;
+                  const shouldShow = showFeatured && !selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive;
                   console.log('[Portal] Featured products check:', {
                     showFeatured,
                     selectedBrand,
