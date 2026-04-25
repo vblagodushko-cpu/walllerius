@@ -54,6 +54,7 @@ export default function PurchasesPage({ setStatus }) {
   const [expandedProducts, setExpandedProducts] = useState(initialState.expandedProducts);
   const [suppliers, setSuppliers] = useState(initialState.suppliers);
   const [ordersByProduct, setOrdersByProduct] = useState(initialState.ordersByProduct);
+  const [clearingMarks, setClearingMarks] = useState(false);
 
   // Стан модалки створення/редагування замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -347,11 +348,9 @@ export default function PurchasesPage({ setStatus }) {
     const supplier = suppliers.find(s => s.id === orderForm.supplierId);
     const quantity = Number(orderForm.quantity);
     const price = Number(orderForm.price);
-
-    if (!supplier) {
-      setStatus?.({ type: "error", message: "Оберіть постачальника" });
-      return;
-    }
+    const isQuickOrder = !orderForm.supplierId;
+    const resolvedSupplierId = supplier?.id || orderForm.supplierId || "quick";
+    const resolvedSupplierName = supplier?.name || orderForm.supplierId || "quick";
     if (!Number.isFinite(quantity) || quantity <= 0) {
       setStatus?.({ type: "error", message: "Кількість має бути > 0" });
       return;
@@ -369,8 +368,9 @@ export default function PurchasesPage({ setStatus }) {
           productBrand: orderModalProduct.brand,
           productId: orderModalProduct.id,
           productName: orderModalProduct.name,
-          supplierId: supplier.id,
-          supplierName: supplier.name || supplier.id,
+          supplierId: resolvedSupplierId,
+          supplierName: resolvedSupplierName,
+          isQuickOrder,
           quantity,
           price,
           currency: orderForm.currency,
@@ -390,8 +390,9 @@ export default function PurchasesPage({ setStatus }) {
             productBrand: orderModalProduct.brand,
             productId: orderModalProduct.id,
             productName: orderModalProduct.name,
-            supplierId: supplier.id,
-            supplierName: supplier.name || supplier.id,
+            supplierId: resolvedSupplierId,
+            supplierName: resolvedSupplierName,
+            isQuickOrder,
             quantity,
             price,
             currency: orderForm.currency,
@@ -403,7 +404,7 @@ export default function PurchasesPage({ setStatus }) {
 
       setStatus?.({
         type: "success",
-        message: `Замовлення створено: ${supplier.name || supplier.id}, ${quantity} шт.`,
+        message: `Замовлення створено: ${resolvedSupplierName}, ${quantity} шт.`,
       });
       closeOrderModal();
     } catch (e) {
@@ -447,6 +448,47 @@ export default function PurchasesPage({ setStatus }) {
     }
   };
 
+  const handleClearPurchaseMarks = async () => {
+    const orders = Object.values(ordersByProduct).flat().filter(o => o?.id);
+    if (!orders.length) {
+      setStatus?.({ type: "info", message: "Немає позначок для видалення." });
+      return;
+    }
+
+    if (!confirm(`Видалити всі позначки закупленого товару? Буде скасовано ${orders.length} відкритих замовлень.`)) {
+      return;
+    }
+
+    setClearingMarks(true);
+    try {
+      await Promise.all(
+        orders.map((order) =>
+          updateDoc(
+            doc(db, `/artifacts/${appId}/public/data/purchaseOrders/${order.id}`),
+            {
+              status: "cancelled",
+              cancelledAt: serverTimestamp(),
+            }
+          )
+        )
+      );
+
+      setOrdersByProduct({});
+      setStatus?.({
+        type: "success",
+        message: `Позначки видалено. Скасовано ${orders.length} замовлень.`,
+      });
+    } catch (e) {
+      console.error("Помилка видалення позначок закупок:", e);
+      setStatus?.({
+        type: "error",
+        message: e?.message || "Не вдалося видалити позначки",
+      });
+    } finally {
+      setClearingMarks(false);
+    }
+  };
+
   return (
     <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
@@ -461,6 +503,14 @@ export default function PurchasesPage({ setStatus }) {
             disabled={loading}
           >
             {loading ? "Завантаження..." : "Завантажити"}
+          </button>
+          <button
+            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg disabled:opacity-50"
+            onClick={handleClearPurchaseMarks}
+            disabled={clearingMarks || !Object.values(ordersByProduct).some(list => (list || []).length > 0)}
+            title="Скасувати всі відкриті замовлення з поточного списку закупок"
+          >
+            {clearingMarks ? "Видалення..." : "Видалити позначки"}
           </button>
         </div>
       </div>
@@ -797,7 +847,6 @@ export default function PurchasesPage({ setStatus }) {
                 <button
                   className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
                   onClick={handleCreateOrder}
-                  disabled={!suppliers.length}
                 >
                   Зберегти
                 </button>

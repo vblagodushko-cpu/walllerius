@@ -473,11 +473,9 @@ export default function ProductsPage() {
     );
     const quantity = Number(orderForm.quantity);
     const price = Number(orderForm.price);
-
-    if (!supplier && !orderForm.supplierId) {
-      setStatusMessage({ type: "error", text: "Оберіть постачальника" });
-      return;
-    }
+    const isQuickOrder = !orderForm.supplierId;
+    const resolvedSupplierId = supplier?.id || orderForm.supplierId || "quick";
+    const resolvedSupplierName = supplier?.name || orderForm.supplierId || "quick";
     if (!Number.isFinite(quantity) || quantity <= 0) {
       setStatusMessage({ type: "error", text: "Кількість має бути > 0" });
       return;
@@ -495,8 +493,9 @@ export default function ProductsPage() {
           productBrand: orderModalProduct.brand,
           productId: orderModalProduct.id,
           productName: orderModalProduct.name,
-          supplierId: supplier?.id || orderForm.supplierId,
-          supplierName: supplier?.name || orderForm.supplierId,
+          supplierId: resolvedSupplierId,
+          supplierName: resolvedSupplierName,
+          isQuickOrder,
           quantity,
           price,
           currency: orderForm.currency,
@@ -507,7 +506,7 @@ export default function ProductsPage() {
 
       setStatusMessage({
         type: "success",
-        text: `Замовлення створено: ${supplier?.name || orderForm.supplierId}, ${quantity} шт.`,
+        text: `Замовлення створено: ${resolvedSupplierName}, ${quantity} шт.`,
       });
       closeOrderModal();
     } catch (e) {
@@ -1354,7 +1353,6 @@ export default function ProductsPage() {
                 <button
                   className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
                   onClick={handleCreateOrder}
-                  disabled={!suppliers.length}
                 >
                   Зберегти
                 </button>
