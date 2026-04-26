@@ -1,20 +1,63 @@
 import React, { useState, useCallback, useMemo, useEffect } from "react";
 import {
   collection,
+  deleteDoc,
+  getDoc,
   getDocs,
   query,
   orderBy,
   where,
   addDoc,
   doc,
+  setDoc,
   updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import { db } from "../../firebase-config";
+import { auth, db } from "../../firebase-config";
+import Tabs from "../components/Tabs.jsx";
 
 const appId = import.meta.env.VITE_PROJECT_ID || "embryo-project";
 const PRODUCTS_PATH = `/artifacts/${appId}/public/data/products`;
+const REPRICE_EXCLUSIONS_PATH = `/artifacts/${appId}/public/meta/repriceSettings/brandExclusions`;
+const REPRICE_MARKS_PATH = `/artifacts/${appId}/public/meta/repriceMarks`;
 const STORAGE_KEY = "purchasesPage_state";
+const INCOMING_FROM_RETAIL_COEF = 0.66667;
+const REPRICE_EPSILON = 0.01;
+const REPRICE_MARK_STALE_DAYS = 30;
+const REPRICE_MARK_STALE_MS = REPRICE_MARK_STALE_DAYS * 24 * 60 * 60 * 1000;
+const EMPTY_REPRICE_GROUPS = { cheaper: [], expensive: [], unavailable: [] };
+
+const normalizeBrand = (brand) => String(brand || "").trim().toLowerCase();
+
+const getIncomingFromRetail = (retailPrice) => {
+  const price = Number(retailPrice || 0);
+  return Number.isFinite(price) && price > 0 ? price * INCOMING_FROM_RETAIL_COEF : 0;
+};
+
+const getRepriceGroupCount = (groups, key) => groups[key]?.length || 0;
+
+const formatDateTime = (value) => {
+  const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const getMarkDate = (mark) => {
+  const value = mark?.markedAtMs || mark?.markedAt;
+  const date = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+};
+
+const isRepriceMarkStale = (mark) => {
+  const date = getMarkDate(mark);
+  return date ? Date.now() - date.getTime() > REPRICE_MARK_STALE_MS : false;
+};
 
 /**
  * Розділ ЗАКУПКИ
@@ -32,6 +75,13 @@ export default function PurchasesPage({ setStatus }) {
           expandedProducts: new Set(state.expandedProducts || []),
           suppliers: state.suppliers || [],
           ordersByProduct: state.ordersByProduct || {},
+          repriceProducts: state.repriceProducts || EMPTY_REPRICE_GROUPS,
+          repriceTab: state.repriceTab || "cheaper",
+          repriceSearch: state.repriceSearch || "",
+          repriceSortBy: state.repriceSortBy || "difference",
+          repriceSortOrder: state.repriceSortOrder || "desc",
+          repriceLastLoadTimestamp: state.repriceLastLoadTimestamp || null,
+          hideRepriced: state.hideRepriced ?? false,
         };
       }
     } catch (e) {
@@ -42,10 +92,18 @@ export default function PurchasesPage({ setStatus }) {
       expandedProducts: new Set(),
       suppliers: [],
       ordersByProduct: {},
+      repriceProducts: EMPTY_REPRICE_GROUPS,
+      repriceTab: "cheaper",
+      repriceSearch: "",
+      repriceSortBy: "difference",
+      repriceSortOrder: "desc",
+      repriceLastLoadTimestamp: null,
+      hideRepriced: false,
     };
   };
 
   const initialState = loadStateFromStorage();
+  const [mainTab, setMainTab] = useState("purchases");
   const [products, setProducts] = useState(initialState.products);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -55,6 +113,22 @@ export default function PurchasesPage({ setStatus }) {
   const [suppliers, setSuppliers] = useState(initialState.suppliers);
   const [ordersByProduct, setOrdersByProduct] = useState(initialState.ordersByProduct);
   const [clearingMarks, setClearingMarks] = useState(false);
+  const [repriceTab, setRepriceTab] = useState(initialState.repriceTab);
+  const [repriceProducts, setRepriceProducts] = useState(initialState.repriceProducts);
+  const [repriceLoading, setRepriceLoading] = useState(false);
+  const [repriceSearch, setRepriceSearch] = useState(initialState.repriceSearch);
+  const [repriceSortBy, setRepriceSortBy] = useState(initialState.repriceSortBy);
+  const [repriceSortOrder, setRepriceSortOrder] = useState(initialState.repriceSortOrder);
+  const [repriceLastLoadTimestamp, setRepriceLastLoadTimestamp] = useState(initialState.repriceLastLoadTimestamp);
+  const [repriceMarks, setRepriceMarks] = useState({});
+  const [repriceMarksLoaded, setRepriceMarksLoaded] = useState(false);
+  const [markingRepriceDocId, setMarkingRepriceDocId] = useState(null);
+  const [clearingRepriceMarks, setClearingRepriceMarks] = useState(false);
+  const [hideRepriced, setHideRepriced] = useState(initialState.hideRepriced);
+  const [excludedBrands, setExcludedBrands] = useState([]);
+  const [excludedBrandInput, setExcludedBrandInput] = useState("");
+  const [savingExcludedBrands, setSavingExcludedBrands] = useState(false);
+  const [exclusionsLoaded, setExclusionsLoaded] = useState(false);
 
   // Стан модалки створення/редагування замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -73,6 +147,13 @@ export default function PurchasesPage({ setStatus }) {
         expandedProducts: Array.from(state.expandedProducts),
         suppliers: state.suppliers,
         ordersByProduct: state.ordersByProduct,
+        repriceProducts: state.repriceProducts,
+        repriceTab: state.repriceTab,
+        repriceSearch: state.repriceSearch,
+        repriceSortBy: state.repriceSortBy,
+        repriceSortOrder: state.repriceSortOrder,
+        repriceLastLoadTimestamp: state.repriceLastLoadTimestamp,
+        hideRepriced: state.hideRepriced,
         lastLoadTimestamp: state.lastLoadTimestamp ?? Date.now(),
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
@@ -88,8 +169,28 @@ export default function PurchasesPage({ setStatus }) {
       expandedProducts,
       suppliers,
       ordersByProduct,
+      repriceProducts,
+      repriceTab,
+      repriceSearch,
+      repriceSortBy,
+      repriceSortOrder,
+      repriceLastLoadTimestamp,
+      hideRepriced,
     });
-  }, [products, expandedProducts, suppliers, ordersByProduct, saveStateToStorage]);
+  }, [
+    products,
+    expandedProducts,
+    suppliers,
+    ordersByProduct,
+    repriceProducts,
+    repriceTab,
+    repriceSearch,
+    repriceSortBy,
+    repriceSortOrder,
+    repriceLastLoadTimestamp,
+    hideRepriced,
+    saveStateToStorage,
+  ]);
 
   // Завантаження товарів для закупівлі
   const loadPurchases = useCallback(async () => {
@@ -120,14 +221,14 @@ export default function PurchasesPage({ setStatus }) {
         
         if (stock < minStock) {
           const retailPrice = warehouseOffer.publicPrices?.["роздріб"] || 0;
-          const incomingPrice = retailPrice * 0.66667;
+          const incomingPrice = getIncomingFromRetail(retailPrice);
           
           // Формуємо список пропозицій постачальників (крім "Мій склад")
           const supplierOffers = data.offers
             .filter(o => o.supplier !== "Мій склад")
             .map(offer => {
               const offerRetail = offer.publicPrices?.["роздріб"] || 0;
-              const offerIncoming = offerRetail * 0.66667;
+              const offerIncoming = getIncomingFromRetail(offerRetail);
               return {
                 supplier: offer.supplier,
                 stock: offer.stock || 0,
@@ -204,6 +305,284 @@ export default function PurchasesPage({ setStatus }) {
     }
   }, [setStatus]);
 
+  const loadExcludedBrands = useCallback(async () => {
+    try {
+      const snap = await getDoc(doc(db, REPRICE_EXCLUSIONS_PATH));
+      const brands = snap.exists() && Array.isArray(snap.data()?.brands)
+        ? snap.data().brands
+        : [];
+      const normalized = brands
+        .map((brand) => String(brand || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      setExcludedBrands(normalized);
+      setExclusionsLoaded(true);
+      return normalized;
+    } catch (e) {
+      console.error("Помилка завантаження брендів-винятків:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося завантажити бренди-винятки" });
+      return excludedBrands;
+    }
+  }, [excludedBrands, setStatus]);
+
+  useEffect(() => {
+    if (mainTab === "reprice" && !exclusionsLoaded) {
+      loadExcludedBrands();
+    }
+  }, [mainTab, exclusionsLoaded, loadExcludedBrands]);
+
+  const loadRepriceMarks = useCallback(async () => {
+    try {
+      const snap = await getDocs(collection(db, REPRICE_MARKS_PATH));
+      const marks = {};
+      snap.forEach((markDoc) => {
+        marks[markDoc.id] = {
+          id: markDoc.id,
+          ...markDoc.data(),
+        };
+      });
+      setRepriceMarks(marks);
+      setRepriceMarksLoaded(true);
+      return marks;
+    } catch (e) {
+      console.error("Помилка завантаження міток переоцінки:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося завантажити мітки переоцінки" });
+      return repriceMarks;
+    }
+  }, [repriceMarks, setStatus]);
+
+  useEffect(() => {
+    if (mainTab === "reprice" && !repriceMarksLoaded) {
+      loadRepriceMarks();
+    }
+  }, [mainTab, repriceMarksLoaded, loadRepriceMarks]);
+
+  const saveExcludedBrands = useCallback(async (brands) => {
+    setSavingExcludedBrands(true);
+    try {
+      const normalized = Array.from(
+        new Map(
+          brands
+            .map((brand) => String(brand || "").trim())
+            .filter(Boolean)
+            .map((brand) => [normalizeBrand(brand), brand])
+        ).values()
+      ).sort((a, b) => a.localeCompare(b));
+
+      await setDoc(
+        doc(db, REPRICE_EXCLUSIONS_PATH),
+        {
+          brands: normalized,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      setExcludedBrands(normalized);
+      setExclusionsLoaded(true);
+      return normalized;
+    } catch (e) {
+      console.error("Помилка збереження брендів-винятків:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося зберегти бренди-винятки" });
+      return null;
+    } finally {
+      setSavingExcludedBrands(false);
+    }
+  }, [setStatus]);
+
+  const addExcludedBrand = async () => {
+    const brand = excludedBrandInput.trim();
+    if (!brand) return;
+    const exists = excludedBrands.some((item) => normalizeBrand(item) === normalizeBrand(brand));
+    if (exists) {
+      setStatus?.({ type: "info", message: "Цей бренд вже є у винятках" });
+      return;
+    }
+    const saved = await saveExcludedBrands([...excludedBrands, brand]);
+    if (saved) {
+      setExcludedBrandInput("");
+      setStatus?.({ type: "success", message: `Бренд ${brand} додано у винятки переоцінки` });
+    }
+  };
+
+  const removeExcludedBrand = async (brand) => {
+    const saved = await saveExcludedBrands(
+      excludedBrands.filter((item) => normalizeBrand(item) !== normalizeBrand(brand))
+    );
+    if (saved) {
+      setStatus?.({ type: "success", message: `Бренд ${brand} видалено з винятків` });
+    }
+  };
+
+  const markProductRepriced = async (product) => {
+    if (!product?.docId) return;
+    setMarkingRepriceDocId(product.docId);
+    try {
+      const markPayload = {
+        productDocId: product.docId,
+        productBrand: product.brand || "",
+        productId: product.id || "",
+        productName: product.name || "",
+        status: "marked",
+        markedAt: serverTimestamp(),
+        markedAtMs: Date.now(),
+        markedBy: auth.currentUser?.uid || null,
+        markedByEmail: auth.currentUser?.email || null,
+        warehouseIncomingPrice: product.warehouseIncomingPrice ?? null,
+        bestSupplierIncomingPrice: product.bestSupplierOffer?.incomingPrice ?? null,
+        difference: product.difference ?? null,
+        differencePercent: product.differencePercent ?? null,
+        supplierName: product.bestSupplierOffer?.supplier || null,
+        supplierStock: product.bestSupplierOffer?.stock ?? null,
+      };
+
+      await setDoc(doc(db, `${REPRICE_MARKS_PATH}/${product.docId}`), markPayload, { merge: true });
+      setRepriceMarks((prev) => ({
+        ...prev,
+        [product.docId]: {
+          id: product.docId,
+          ...markPayload,
+        },
+      }));
+      setStatus?.({ type: "success", message: `Позначено переоціненим: ${product.brand || ""} ${product.id || ""}`.trim() });
+    } catch (e) {
+      console.error("Помилка встановлення мітки переоцінки:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося позначити товар переоціненим" });
+    } finally {
+      setMarkingRepriceDocId(null);
+    }
+  };
+
+  const clearRepriceMarks = async () => {
+    const markIds = Object.keys(repriceMarks);
+    if (!markIds.length) {
+      setStatus?.({ type: "info", message: "Немає міток переоцінки для очищення." });
+      return;
+    }
+    if (!confirm(`Очистити всі мітки переоцінки? Буде видалено ${markIds.length} міток.`)) {
+      return;
+    }
+
+    setClearingRepriceMarks(true);
+    try {
+      await Promise.all(
+        markIds.map((markId) => deleteDoc(doc(db, `${REPRICE_MARKS_PATH}/${markId}`)))
+      );
+      setRepriceMarks({});
+      setRepriceMarksLoaded(true);
+      setStatus?.({ type: "success", message: `Очищено ${markIds.length} міток переоцінки.` });
+    } catch (e) {
+      console.error("Помилка очищення міток переоцінки:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося очистити мітки переоцінки" });
+    } finally {
+      setClearingRepriceMarks(false);
+    }
+  };
+
+  const loadRepriceProducts = useCallback(async () => {
+    setRepriceLoading(true);
+    setStatus?.(null);
+    try {
+      const [brands] = await Promise.all([
+        exclusionsLoaded ? Promise.resolve(excludedBrands) : loadExcludedBrands(),
+        repriceMarksLoaded ? Promise.resolve(repriceMarks) : loadRepriceMarks(),
+      ]);
+      const excludedSet = new Set(brands.map(normalizeBrand));
+      const q = query(collection(db, PRODUCTS_PATH), orderBy("brand"));
+      const snap = await getDocs(q);
+      const groups = { cheaper: [], expensive: [], unavailable: [] };
+      let skippedByBrand = 0;
+
+      snap.forEach((productDoc) => {
+        const data = productDoc.data();
+        const brand = data.brand || "";
+        if (excludedSet.has(normalizeBrand(brand))) {
+          skippedByBrand += 1;
+          return;
+        }
+        if (!Array.isArray(data.offers)) return;
+
+        const warehouseOffer = data.offers.find((offer) => offer.supplier === "Мій склад");
+        if (!warehouseOffer) return;
+
+        const warehouseStock = Number(warehouseOffer.stock || 0);
+        if (!Number.isFinite(warehouseStock) || warehouseStock <= 0) return;
+
+        const warehouseRetailPrice = Number(warehouseOffer.publicPrices?.["роздріб"] || 0);
+        const warehouseIncomingPrice = getIncomingFromRetail(warehouseRetailPrice);
+        if (warehouseIncomingPrice <= 0) return;
+
+        const supplierOffers = data.offers
+          .filter((offer) => offer.supplier && offer.supplier !== "Мій склад")
+          .map((offer) => {
+            const retailPrice = Number(offer.publicPrices?.["роздріб"] || 0);
+            const incomingPrice = getIncomingFromRetail(retailPrice);
+            return {
+              supplier: offer.supplier,
+              stock: Number(offer.stock || 0),
+              retailPrice,
+              incomingPrice,
+            };
+          })
+          .filter((offer) => offer.stock > 0 && offer.retailPrice > 0 && offer.incomingPrice > 0)
+          .sort((a, b) => a.incomingPrice - b.incomingPrice);
+
+        const bestSupplierOffer = supplierOffers[0] || null;
+        const difference = bestSupplierOffer
+          ? bestSupplierOffer.incomingPrice - warehouseIncomingPrice
+          : null;
+        const differencePercent = difference != null
+          ? (difference / warehouseIncomingPrice) * 100
+          : null;
+
+        const item = {
+          docId: productDoc.id,
+          brand,
+          id: data.id,
+          name: data.name,
+          stock: warehouseStock,
+          lastSupplier: data.lastSupplier || "—",
+          warehouseRetailPrice,
+          warehouseIncomingPrice,
+          bestSupplierOffer,
+          supplierOffers,
+          difference,
+          differencePercent,
+        };
+
+        if (!bestSupplierOffer) {
+          groups.unavailable.push(item);
+        } else if (difference > REPRICE_EPSILON) {
+          groups.expensive.push(item);
+        } else {
+          groups.cheaper.push(item);
+        }
+      });
+
+      Object.keys(groups).forEach((key) => {
+        groups[key].sort((a, b) => {
+          const aDiff = Math.abs(a.difference || 0);
+          const bDiff = Math.abs(b.difference || 0);
+          return bDiff - aDiff;
+        });
+      });
+
+      setRepriceProducts(groups);
+      setRepriceSearch("");
+      setRepriceSortBy("difference");
+      setRepriceSortOrder("desc");
+      setRepriceLastLoadTimestamp(Date.now());
+      setStatus?.({
+        type: "success",
+        message: `Переоцінка готова: дешевше або без змін ${groups.cheaper.length}, подорожчали ${groups.expensive.length}, немає в постачальників ${groups.unavailable.length}. Пропущено брендів-винятків: ${skippedByBrand}.`,
+      });
+    } catch (e) {
+      console.error("Помилка моніторингу переоцінки:", e);
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося промоніторити переоцінку" });
+    } finally {
+      setRepriceLoading(false);
+    }
+  }, [excludedBrands, exclusionsLoaded, loadExcludedBrands, loadRepriceMarks, repriceMarks, repriceMarksLoaded, setStatus]);
+
   // Фільтрація та сортування
   const filteredAndSorted = useMemo(() => {
     let filtered = products;
@@ -264,6 +643,72 @@ export default function PurchasesPage({ setStatus }) {
     return filtered;
   }, [products, searchQuery, sortBy, sortOrder]);
 
+  const filteredRepriceProducts = useMemo(() => {
+    const source = repriceProducts[repriceTab] || [];
+    const queryText = repriceSearch.trim().toLowerCase();
+    let filtered = source;
+
+    if (queryText) {
+      filtered = source.filter((product) => {
+        const offersText = (product.supplierOffers || [])
+          .map((offer) => offer.supplier)
+          .join(" ")
+          .toLowerCase();
+        return (
+          String(product.brand || "").toLowerCase().includes(queryText) ||
+          String(product.id || "").toLowerCase().includes(queryText) ||
+          String(product.name || "").toLowerCase().includes(queryText) ||
+          String(product.lastSupplier || "").toLowerCase().includes(queryText) ||
+          offersText.includes(queryText)
+        );
+      });
+    }
+
+    if (hideRepriced) {
+      filtered = filtered.filter((product) => !repriceMarks[product.docId]);
+    }
+
+    return [...filtered].sort((a, b) => {
+      let aVal;
+      let bVal;
+      switch (repriceSortBy) {
+        case "brand":
+          aVal = a.brand || "";
+          bVal = b.brand || "";
+          break;
+        case "id":
+          aVal = a.id || "";
+          bVal = b.id || "";
+          break;
+        case "stock":
+          aVal = a.stock || 0;
+          bVal = b.stock || 0;
+          break;
+        case "warehousePrice":
+          aVal = a.warehouseIncomingPrice || 0;
+          bVal = b.warehouseIncomingPrice || 0;
+          break;
+        case "bestPrice":
+          aVal = a.bestSupplierOffer?.incomingPrice || 0;
+          bVal = b.bestSupplierOffer?.incomingPrice || 0;
+          break;
+        case "difference":
+          aVal = Math.abs(a.difference || 0);
+          bVal = Math.abs(b.difference || 0);
+          break;
+        default:
+          return 0;
+      }
+
+      if (typeof aVal === "string") {
+        return repriceSortOrder === "asc"
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
+      return repriceSortOrder === "asc" ? aVal - bVal : bVal - aVal;
+    });
+  }, [hideRepriced, repriceMarks, repriceProducts, repriceSearch, repriceSortBy, repriceSortOrder, repriceTab]);
+
   const handleSort = (column) => {
     if (sortBy === column) {
       setSortOrder(sortOrder === "asc" ? "desc" : "asc");
@@ -276,6 +721,20 @@ export default function PurchasesPage({ setStatus }) {
   const getSortIcon = (column) => {
     if (sortBy !== column) return "↕️";
     return sortOrder === "asc" ? "↑" : "↓";
+  };
+
+  const handleRepriceSort = (column) => {
+    if (repriceSortBy === column) {
+      setRepriceSortOrder(repriceSortOrder === "asc" ? "desc" : "asc");
+    } else {
+      setRepriceSortBy(column);
+      setRepriceSortOrder(column === "brand" || column === "id" ? "asc" : "desc");
+    }
+  };
+
+  const getRepriceSortIcon = (column) => {
+    if (repriceSortBy !== column) return "↕️";
+    return repriceSortOrder === "asc" ? "↑" : "↓";
   };
 
   const toggleExpand = (docId) => {
@@ -493,28 +952,45 @@ export default function PurchasesPage({ setStatus }) {
     <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <h2 className="text-lg font-semibold">ЗАКУПКИ</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded border border-amber-200">
             ⚠️ Читає всі товари з бази (може бути багато reads)
           </div>
-          <button
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-            onClick={loadPurchases}
-            disabled={loading}
-          >
-            {loading ? "Завантаження..." : "Завантажити"}
-          </button>
-          <button
-            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg disabled:opacity-50"
-            onClick={handleClearPurchaseMarks}
-            disabled={clearingMarks || !Object.values(ordersByProduct).some(list => (list || []).length > 0)}
-            title="Скасувати всі відкриті замовлення з поточного списку закупок"
-          >
-            {clearingMarks ? "Видалення..." : "Видалити позначки"}
-          </button>
+          {mainTab === "purchases" && (
+            <>
+              <button
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                onClick={loadPurchases}
+                disabled={loading}
+              >
+                {loading ? "Завантаження..." : "Завантажити"}
+              </button>
+              <button
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg disabled:opacity-50"
+                onClick={handleClearPurchaseMarks}
+                disabled={clearingMarks || !Object.values(ordersByProduct).some(list => (list || []).length > 0)}
+                title="Скасувати всі відкриті замовлення з поточного списку закупок"
+              >
+                {clearingMarks ? "Видалення..." : "Видалити позначки"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      <div className="mb-4">
+        <Tabs
+          items={[
+            { key: "purchases", label: "Закупки" },
+            { key: "reprice", label: "Переоцінка" },
+          ]}
+          value={mainTab}
+          onChange={setMainTab}
+        />
+      </div>
+
+      {mainTab === "purchases" && (
+        <>
       {products.length > 0 && (
         <div className="mb-4">
           <input
@@ -725,6 +1201,296 @@ export default function PurchasesPage({ setStatus }) {
             </table>
           </div>
         </>
+      )}
+        </>
+      )}
+
+      {mainTab === "reprice" && (
+        <div className="space-y-4">
+          <div className="border rounded-xl p-3 bg-slate-50">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-3 justify-between">
+              <div className="space-y-2 flex-1">
+                <div>
+                  <h3 className="font-semibold text-slate-800">Бренди-винятки</h3>
+                  <p className="text-sm text-slate-500">
+                    Ці бренди не потрапляють у моніторинг переоцінки.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    className="p-2 border rounded-lg w-full sm:max-w-sm bg-white"
+                    placeholder="Назва бренду"
+                    value={excludedBrandInput}
+                    onChange={(e) => setExcludedBrandInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addExcludedBrand();
+                      }
+                    }}
+                  />
+                  <button
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg disabled:opacity-50"
+                    onClick={addExcludedBrand}
+                    disabled={savingExcludedBrands || !excludedBrandInput.trim()}
+                  >
+                    {savingExcludedBrands ? "Збереження..." : "Додати виняток"}
+                  </button>
+                </div>
+                {excludedBrands.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {excludedBrands.map((brand) => (
+                      <span
+                        key={brand}
+                        className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border text-sm text-slate-700"
+                      >
+                        {brand}
+                        <button
+                          className="text-slate-400 hover:text-red-600"
+                          onClick={() => removeExcludedBrand(brand)}
+                          disabled={savingExcludedBrands}
+                          title="Видалити виняток"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-400">Список винятків порожній.</div>
+                )}
+              </div>
+              <button
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                onClick={loadRepriceProducts}
+                disabled={repriceLoading}
+              >
+                {repriceLoading ? "Моніторинг..." : "Промоніторити ціни"}
+              </button>
+            </div>
+          </div>
+
+          <Tabs
+            items={[
+              { key: "cheaper", label: `Дешевше (${getRepriceGroupCount(repriceProducts, "cheaper")})` },
+              { key: "expensive", label: `Подорожчали (${getRepriceGroupCount(repriceProducts, "expensive")})` },
+              { key: "unavailable", label: `Немає в постачальників (${getRepriceGroupCount(repriceProducts, "unavailable")})` },
+            ]}
+            value={repriceTab}
+            onChange={setRepriceTab}
+          />
+
+          {Object.values(repriceProducts).some((list) => list.length > 0) && (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 flex-wrap">
+              <input
+                className="p-2 border rounded w-full max-w-md"
+                placeholder="Пошук: бренд, артикул, назва або постачальник"
+                value={repriceSearch}
+                onChange={(e) => setRepriceSearch(e.target.value)}
+              />
+              <label className="inline-flex items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={hideRepriced}
+                  onChange={(e) => setHideRepriced(e.target.checked)}
+                />
+                Сховати переоцінені
+              </label>
+              <button
+                className="px-3 py-2 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm disabled:opacity-50"
+                onClick={clearRepriceMarks}
+                disabled={clearingRepriceMarks || Object.keys(repriceMarks).length === 0}
+                title="Видалити всі мітки переоцінки"
+              >
+                {clearingRepriceMarks
+                  ? "Очищення..."
+                  : `Очистити мітки (${Object.keys(repriceMarks).length})`}
+              </button>
+            </div>
+          )}
+
+          {repriceLoading && (
+            <div className="text-center py-8 text-gray-500">Моніторинг переоцінки...</div>
+          )}
+
+          {!repriceLoading && !Object.values(repriceProducts).some((list) => list.length > 0) && (
+            <div className="text-center py-8 text-gray-500">
+              Натисніть "Промоніторити ціни", щоб порівняти товари на "Мій склад" із пропозиціями постачальників.
+            </div>
+          )}
+
+          {!repriceLoading && Object.values(repriceProducts).some((list) => list.length > 0) && (
+            <>
+              <div className="text-sm text-gray-600">
+                Знайдено: {filteredRepriceProducts.length} товарів
+                {filteredRepriceProducts.length !== (repriceProducts[repriceTab]?.length || 0) &&
+                  ` (з ${repriceProducts[repriceTab]?.length || 0})`}
+              </div>
+              <div className="overflow-x-auto border rounded-xl">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("brand")}>
+                        Бренд {getRepriceSortIcon("brand")}
+                      </th>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("id")}>
+                        Артикул {getRepriceSortIcon("id")}
+                      </th>
+                      <th className="px-3 py-2 text-left">Назва</th>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("stock")}>
+                        Залишок {getRepriceSortIcon("stock")}
+                      </th>
+                      <th className="px-3 py-2 text-left">Останній постачальник</th>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("warehousePrice")}>
+                        Вхідна Мій склад {getRepriceSortIcon("warehousePrice")}
+                      </th>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("bestPrice")}>
+                        Найкраща пропозиція {getRepriceSortIcon("bestPrice")}
+                      </th>
+                      <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("difference")}>
+                        Різниця {getRepriceSortIcon("difference")}
+                      </th>
+                      <th className="px-3 py-2 text-left">Статус</th>
+                      <th className="px-3 py-2 text-left">Топ пропозицій</th>
+                      <th className="px-3 py-2 text-left">Дія</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRepriceProducts.map((product) => {
+                      const isCheaper = product.difference != null && product.difference < 0;
+                      const topOffers = product.supplierOffers?.slice(0, 3) || [];
+                      const repriceMark = repriceMarks[product.docId];
+                      const repriceMarkStale = isRepriceMarkStale(repriceMark);
+                      return (
+                        <tr
+                          key={product.docId}
+                          className={[
+                            "border-t",
+                            repriceMark
+                              ? repriceMarkStale
+                                ? "bg-amber-50"
+                                : "bg-emerald-50"
+                              : "",
+                          ].join(" ")}
+                        >
+                          <td className="px-3 py-2 whitespace-nowrap">{product.brand || "—"}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <div className="flex items-center gap-1">
+                              <span>{product.id || "—"}</span>
+                              {product.id && (
+                                <button
+                                  type="button"
+                                  className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors"
+                                  title="Копіювати артикул"
+                                  onClick={() => copyArticle(product.id)}
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 min-w-[220px]">{product.name || "—"}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">{product.stock}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">{product.lastSupplier}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {product.warehouseIncomingPrice > 0 ? product.warehouseIncomingPrice.toFixed(2) : "—"}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {product.bestSupplierOffer ? (
+                              <div className="flex flex-col">
+                                <span className="font-medium">{formatSupplierName(product.bestSupplierOffer.supplier)}</span>
+                                <span className="text-blue-600">{product.bestSupplierOffer.incomingPrice.toFixed(2)}</span>
+                                <span className="text-xs text-slate-500">наявність: {product.bestSupplierOffer.stock}</span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">Немає в наявності</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {product.difference != null ? (
+                              <div className={isCheaper ? "text-emerald-700" : "text-red-700"}>
+                                <div>{isCheaper ? "" : "+"}{product.difference.toFixed(2)}</div>
+                                <div className="text-xs">
+                                  {isCheaper ? "" : "+"}{product.differencePercent.toFixed(1)}%
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {repriceMark ? (
+                              <div className="flex flex-col">
+                                <span
+                                  className={[
+                                    "inline-flex w-fit px-2 py-0.5 rounded-full border text-xs font-medium",
+                                    repriceMarkStale
+                                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                                      : "bg-emerald-50 text-emerald-700 border-emerald-200",
+                                  ].join(" ")}
+                                >
+                                  {repriceMarkStale ? "Переоцінено давно" : "Переоцінено"}
+                                </span>
+                                <span className="text-xs text-slate-500 mt-1">
+                                  {formatDateTime(repriceMark.markedAtMs || repriceMark.markedAt)}
+                                </span>
+                                {repriceMarkStale && (
+                                  <span className="text-xs text-amber-600 mt-0.5">
+                                    старше {REPRICE_MARK_STALE_DAYS} днів
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-xs">не позначено</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {topOffers.length > 0 ? (
+                              <div className="space-y-1">
+                                {topOffers.map((offer, idx) => (
+                                  <div key={`${offer.supplier}-${idx}`} className="text-xs text-gray-700">
+                                    <span className="font-medium">{formatSupplierName(offer.supplier)}</span>
+                                    {": "}
+                                    <span className="text-blue-600">{offer.incomingPrice.toFixed(2)}</span>
+                                    <span className="text-gray-500"> ({offer.stock})</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400 text-xs">немає в наявності</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <button
+                              className="px-3 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs disabled:opacity-50"
+                              onClick={() => markProductRepriced(product)}
+                              disabled={markingRepriceDocId === product.docId}
+                            >
+                              {markingRepriceDocId === product.docId
+                                ? "Збереження..."
+                                : repriceMark
+                                  ? "Оновити мітку"
+                                  : "Позначити"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredRepriceProducts.length === 0 && (
+                      <tr>
+                        <td className="px-3 py-8 text-center text-gray-500" colSpan={11}>
+                          Немає товарів у цій вкладці
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {/* Модалка створення замовлення */}
