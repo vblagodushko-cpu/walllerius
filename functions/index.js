@@ -214,6 +214,177 @@ exports.clearMasterDataCache = onCall({ region: REGION, cors: true }, async (req
 });
 
 /**
+ * updateProductMasterData - швидке редагування безпечних master-полів товару.
+ * brand/id не змінюються, вони використовуються тільки як ключ існуючої картки.
+ */
+exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (request) => {
+  if (!request.auth?.token?.admin) {
+    throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+  }
+
+  const {
+    productDocId,
+    brand,
+    id,
+    correctName,
+    categories,
+    pack,
+    tolerances,
+    synonyms,
+  } = request.data || {};
+
+  const { normalizeArticle, str: sharedStr, clearMasterDataCache } = require("./shared");
+  const cleanProductDocId = sharedStr(productDocId, 200);
+  const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
+  const cleanId = normalizeArticle(id);
+
+  if (!cleanProductDocId || !cleanBrand || !cleanId) {
+    throw new HttpsError("invalid-argument", "productDocId, brand та id обов'язкові.");
+  }
+
+  const cleanList = (value, maxItems = 80, maxLen = 120) => {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    return value
+      .map((item) => sharedStr(item, maxLen))
+      .filter(Boolean)
+      .filter((item) => {
+        const key = item.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, maxItems);
+  };
+
+  const safeCorrectName = sharedStr(correctName, 500);
+  const safeCategories = cleanList(categories, 50, 120);
+  const safePack = sharedStr(pack, 200);
+  const safeTolerances = sharedStr(tolerances, 500);
+  const safeSynonyms = cleanList(synonyms, 100, 120).map(normalizeArticle).filter(Boolean);
+  const masterDocId = `${cleanBrand}__${cleanId}`;
+
+  const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${cleanProductDocId}`);
+  const masterRef = db.doc(`/artifacts/${APP_ID}/public/data/productMasterData/${masterDocId}`);
+
+  const productSnap = await productRef.get();
+  if (!productSnap.exists) {
+    throw new HttpsError("not-found", "Товар не знайдено.");
+  }
+
+  const product = productSnap.data() || {};
+  if (product.brand !== cleanBrand || normalizeArticle(product.id) !== cleanId) {
+    throw new HttpsError("failed-precondition", "brand/id товару не збігаються з master-карткою.");
+  }
+
+  const masterPayload = {
+    brand: cleanBrand,
+    id: cleanId,
+    correctName: safeCorrectName,
+    categories: safeCategories,
+    pack: safePack,
+    tolerances: safeTolerances,
+    synonyms: safeSynonyms,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  };
+
+  const productPayload = {
+    categories: safeCategories,
+    pack: safePack,
+    tolerances: safeTolerances,
+    synonyms: safeSynonyms,
+    needsReview: false,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (safeCorrectName) {
+    productPayload.name = safeCorrectName;
+  }
+
+  await db.runTransaction(async (tx) => {
+    tx.set(masterRef, masterPayload, { merge: true });
+    tx.set(productRef, productPayload, { merge: true });
+  });
+
+  clearMasterDataCache();
+
+  logger.info("Product master data updated", {
+    uid: request.auth.uid,
+    productDocId: cleanProductDocId,
+    masterDocId,
+    categoriesCount: safeCategories.length,
+    synonymsCount: safeSynonyms.length,
+  });
+
+  return {
+    success: true,
+    productDocId: cleanProductDocId,
+    masterDocId,
+    productPatch: {
+      ...productPayload,
+      updatedAt: null,
+      ...(safeCorrectName ? { name: safeCorrectName } : {}),
+    },
+    masterData: {
+      ...masterPayload,
+      updatedAt: null,
+    },
+  };
+});
+
+/**
+ * deleteProductMasterData - видаляє тільки master-картку товару.
+ * Сам документ products/{productDocId} не змінюється.
+ */
+exports.deleteProductMasterData = onCall({ region: REGION, cors: true }, async (request) => {
+  if (!request.auth?.token?.admin) {
+    throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+  }
+
+  const { productDocId, brand, id } = request.data || {};
+  const { normalizeArticle, str: sharedStr, clearMasterDataCache } = require("./shared");
+
+  const cleanProductDocId = sharedStr(productDocId, 200);
+  const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
+  const cleanId = normalizeArticle(id);
+
+  if (!cleanProductDocId || !cleanBrand || !cleanId) {
+    throw new HttpsError("invalid-argument", "productDocId, brand та id обов'язкові.");
+  }
+
+  const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${cleanProductDocId}`);
+  const productSnap = await productRef.get();
+  if (!productSnap.exists) {
+    throw new HttpsError("not-found", "Товар не знайдено.");
+  }
+
+  const product = productSnap.data() || {};
+  if (product.brand !== cleanBrand || normalizeArticle(product.id) !== cleanId) {
+    throw new HttpsError("failed-precondition", "brand/id товару не збігаються з master-карткою.");
+  }
+
+  const masterDocId = `${cleanBrand}__${cleanId}`;
+  const masterRef = db.doc(`/artifacts/${APP_ID}/public/data/productMasterData/${masterDocId}`);
+  const masterSnap = await masterRef.get();
+  await masterRef.delete();
+  clearMasterDataCache();
+
+  logger.info("Product master data deleted", {
+    uid: request.auth.uid,
+    productDocId: cleanProductDocId,
+    masterDocId,
+    existed: masterSnap.exists,
+  });
+
+  return {
+    success: true,
+    productDocId: cleanProductDocId,
+    masterDocId,
+    deleted: masterSnap.exists,
+  };
+});
+
+/**
  * resetAdminPassword - скинути пароль адміністратора
  * Працює без автентифікації для першого адміна або з адмін-доступом
  */

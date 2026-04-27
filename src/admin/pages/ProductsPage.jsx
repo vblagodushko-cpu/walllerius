@@ -26,6 +26,17 @@ const MAX_PRODUCTS = 300;
 const PRICE_TYPE_INCOMING = "вхідна";
 const INCOMING_FROM_RETAIL_COEF = 0.66667;
 
+function splitTextList(value) {
+  return String(value || "")
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function joinTextList(value) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
 function estimateIncomingFromRetail(publicPrices) {
   if (!publicPrices || typeof publicPrices !== "object") return null;
   const retail = Number(publicPrices["роздріб"]) || 0;
@@ -98,6 +109,20 @@ export default function ProductsPage() {
     currency: "EUR",
   });
   const [suppliers, setSuppliers] = useState([]);
+  const [categoriesList, setCategoriesList] = useState([]);
+
+  // Модалка швидкого редагування master-даних
+  const [masterModalProduct, setMasterModalProduct] = useState(null);
+  const [masterForm, setMasterForm] = useState({
+    correctName: "",
+    categories: [],
+    pack: "",
+    tolerances: "",
+    synonymsText: "",
+  });
+  const [loadingMasterData, setLoadingMasterData] = useState(false);
+  const [savingMasterData, setSavingMasterData] = useState(false);
+  const [deletingMasterData, setDeletingMasterData] = useState(false);
 
   // Кеш товарів по брендах (ключ: brandId, значення: { products })
   const brandCacheRef = useRef(new Map());
@@ -293,11 +318,163 @@ export default function ProductsPage() {
     loadSuppliersForOrder();
   }, []);
 
+  // Категорії для швидкого редагування master-даних
+  useEffect(() => {
+    const loadCategories = async () => {
+      try {
+        const snap = await getDocs(
+          collection(db, `/artifacts/${appId}/public/meta/categories`)
+        );
+        const categories = snap.docs
+          .map((d) => ({ id: d.id, name: d.data().name || d.id }))
+          .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "uk"));
+        setCategoriesList(categories);
+      } catch (e) {
+        console.error("Помилка завантаження категорій", e);
+      }
+    };
+    loadCategories();
+  }, []);
+
   // Функція нормалізації артикулу (як в shared.js)
   const normalizeArticle = (v) => {
     const s = String(v ?? "").trim().toUpperCase();
     return s.replace(/\s+/g, "").replace(/[^\w.-]/g, "");
   };
+
+  const applyProductPatch = useCallback((productDocId, patch) => {
+    const apply = (product) =>
+      product.docId === productDocId
+        ? {
+            ...product,
+            ...patch,
+            name: patch.name || product.name,
+          }
+        : product;
+
+    setProducts((prev) => prev.map(apply));
+    setFeaturedProductsData((prev) => prev.map(apply));
+    brandCacheRef.current.forEach((cached, key) => {
+      brandCacheRef.current.set(key, {
+        ...cached,
+        products: (cached.products || []).map(apply),
+      });
+    });
+  }, []);
+
+  const openMasterModal = useCallback(async (product) => {
+    setMasterModalProduct(product);
+    setLoadingMasterData(true);
+    setMasterForm({
+      correctName: product.name || "",
+      categories: Array.isArray(product.categories) ? product.categories : [],
+      pack: product.pack || "",
+      tolerances: product.tolerances || "",
+      synonymsText: joinTextList(product.synonyms),
+    });
+
+    try {
+      const masterDocId = `${product.brand}__${normalizeArticle(product.id)}`;
+      const masterRef = doc(db, `/artifacts/${appId}/public/data/productMasterData`, masterDocId);
+      const snap = await getDoc(masterRef);
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        setMasterForm({
+          correctName: data.correctName || product.name || "",
+          categories: Array.isArray(data.categories) ? data.categories : [],
+          pack: data.pack || "",
+          tolerances: data.tolerances || "",
+          synonymsText: joinTextList(data.synonyms),
+        });
+      }
+    } catch (e) {
+      console.error("Помилка завантаження master-даних", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося завантажити master-дані",
+      });
+    } finally {
+      setLoadingMasterData(false);
+    }
+  }, []);
+
+  const closeMasterModal = useCallback(() => {
+    setMasterModalProduct(null);
+    setLoadingMasterData(false);
+    setSavingMasterData(false);
+    setDeletingMasterData(false);
+  }, []);
+
+  const handleSaveMasterData = useCallback(async () => {
+    if (!masterModalProduct) return;
+
+    setSavingMasterData(true);
+    try {
+      const call = httpsCallable(functions, "updateProductMasterData");
+      const { data } = await call({
+        productDocId: masterModalProduct.docId,
+        brand: masterModalProduct.brand,
+        id: masterModalProduct.id,
+        correctName: masterForm.correctName,
+        categories: masterForm.categories,
+        pack: masterForm.pack,
+        tolerances: masterForm.tolerances,
+        synonyms: splitTextList(masterForm.synonymsText),
+      });
+
+      const productPatch = data?.productPatch || {
+        name: masterForm.correctName,
+        categories: masterForm.categories,
+        pack: masterForm.pack,
+        tolerances: masterForm.tolerances,
+        synonyms: splitTextList(masterForm.synonymsText),
+      };
+      applyProductPatch(masterModalProduct.docId, productPatch);
+      setStatusMessage({ type: "success", text: "Master-дані товару оновлено" });
+      closeMasterModal();
+    } catch (e) {
+      console.error("Помилка збереження master-даних", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося зберегти master-дані",
+      });
+    } finally {
+      setSavingMasterData(false);
+    }
+  }, [masterModalProduct, masterForm, applyProductPatch, closeMasterModal]);
+
+  const handleDeleteMasterData = useCallback(async () => {
+    if (!masterModalProduct) return;
+    if (!window.confirm(
+      `Видалити master-дані для ${masterModalProduct.brand} ${masterModalProduct.id}?\nСам товар у каталозі не буде змінено.`
+    )) {
+      return;
+    }
+
+    setDeletingMasterData(true);
+    try {
+      const call = httpsCallable(functions, "deleteProductMasterData");
+      await call({
+        productDocId: masterModalProduct.docId,
+        brand: masterModalProduct.brand,
+        id: masterModalProduct.id,
+      });
+
+      setStatusMessage({
+        type: "success",
+        text: "Master-дані товару видалено. Сам товар не змінювався.",
+      });
+      closeMasterModal();
+    } catch (e) {
+      console.error("Помилка видалення master-даних", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося видалити master-дані",
+      });
+    } finally {
+      setDeletingMasterData(false);
+    }
+  }, [masterModalProduct, closeMasterModal]);
 
   // Фільтрований список брендів для бічної панелі
   const filteredBrands = useMemo(() => {
@@ -640,6 +817,10 @@ export default function ProductsPage() {
           brand: product.brand || "",
           id: product.id || "",
           name: product.name || "",
+          categories: Array.isArray(product.categories) ? product.categories : [],
+          pack: product.pack || "",
+          tolerances: product.tolerances || "",
+          synonyms: Array.isArray(product.synonyms) ? product.synonyms : [],
           supplier: offer.supplier || "",
           stock: offer.stock ?? 0,
           price: offer.price ?? null, // Вхідна (закупівельна) ціна
@@ -688,6 +869,10 @@ export default function ProductsPage() {
             brand: row.brand,
             id: row.id,
             name: row.name,
+            categories: row.categories,
+            pack: row.pack,
+            tolerances: row.tolerances,
+            synonyms: row.synonyms,
           },
           offers: [row],
         };
@@ -708,6 +893,20 @@ export default function ProductsPage() {
     { key: "catalog", label: "Каталог" },
     { key: "featured", label: "Рекомендовані" },
   ];
+
+  const masterCategoryOptions = useMemo(() => {
+    const map = new Map();
+    categoriesList.forEach((cat) => {
+      const name = cat.name || cat.id;
+      if (name) map.set(name, { id: cat.id || name, name });
+    });
+    masterForm.categories.forEach((name) => {
+      if (name && !map.has(name)) map.set(name, { id: name, name });
+    });
+    return Array.from(map.values()).sort((a, b) =>
+      String(a.name || "").localeCompare(String(b.name || ""), "uk")
+    );
+  }, [categoriesList, masterForm.categories]);
   
   return (
     <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
@@ -1174,6 +1373,16 @@ export default function ProductsPage() {
                         </button>
                       )}
                       
+                      {offerIndex === 0 && (
+                        <button
+                          onClick={() => openMasterModal(group.product)}
+                          className="px-2 py-1 rounded text-sm bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition-colors"
+                          title="Редагувати master-дані товару"
+                        >
+                          ✏️
+                        </button>
+                      )}
+
                       <button
                         onClick={() => openOrderModal(group.product, row)}
                         className="px-2 py-1 rounded text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors"
@@ -1207,6 +1416,199 @@ export default function ProductsPage() {
           </div>
         </section>
       </div>
+      )}
+
+      {/* Модалка редагування master-даних */}
+      {masterModalProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={savingMasterData || deletingMasterData ? undefined : closeMasterModal}
+          />
+          <div className="relative bg-white rounded-2xl shadow-xl w-[min(720px,96vw)] max-h-[90vh] overflow-auto">
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold">Редагування master-даних</h3>
+                <p className="text-xs text-slate-500">
+                  Brand та id не змінюються, щоб не ламати ідентифікацію товару.
+                </p>
+              </div>
+              <button
+                className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-sm disabled:opacity-60"
+                onClick={closeMasterModal}
+                disabled={savingMasterData || deletingMasterData}
+              >
+                Закрити
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-600 mb-1">Бренд</label>
+                  <input
+                    className="w-full px-3 py-2 border rounded-lg bg-slate-50 text-slate-600"
+                    value={masterModalProduct.brand}
+                    readOnly
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-600 mb-1">Артикул / id</label>
+                  <input
+                    className="w-full px-3 py-2 border rounded-lg bg-slate-50 text-slate-600"
+                    value={masterModalProduct.id}
+                    readOnly
+                  />
+                </div>
+              </div>
+
+              {loadingMasterData ? (
+                <div className="py-8 text-center text-slate-500">
+                  Завантаження master-даних...
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Правильна назва
+                    </label>
+                    <textarea
+                      className="w-full px-3 py-2 border rounded-lg min-h-[76px]"
+                      value={masterForm.correctName}
+                      onChange={(e) =>
+                        setMasterForm((prev) => ({
+                          ...prev,
+                          correctName: e.target.value,
+                        }))
+                      }
+                      placeholder="Назва, яка буде показана в каталозі"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-2">
+                      Категорії
+                    </label>
+                    <div className="max-h-48 overflow-auto border rounded-lg p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                      {masterCategoryOptions.map((category) => {
+                        const name = category.name || category.id;
+                        const checked = masterForm.categories.includes(name);
+                        return (
+                          <label
+                            key={category.id}
+                            className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setMasterForm((prev) => ({
+                                  ...prev,
+                                  categories: e.target.checked
+                                    ? [...prev.categories, name]
+                                    : prev.categories.filter((item) => item !== name),
+                                }))
+                              }
+                            />
+                            <span>{name}</span>
+                          </label>
+                        );
+                      })}
+                      {masterCategoryOptions.length === 0 && (
+                        <div className="text-slate-500 px-2 py-1">
+                          Категорії ще не налаштовані в довіднику.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">Фасування / pack</label>
+                      <input
+                        className="w-full px-3 py-2 border rounded-lg"
+                        value={masterForm.pack}
+                        onChange={(e) =>
+                          setMasterForm((prev) => ({
+                            ...prev,
+                            pack: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">Допуски / tolerances</label>
+                      <input
+                        className="w-full px-3 py-2 border rounded-lg"
+                        value={masterForm.tolerances}
+                        onChange={(e) =>
+                          setMasterForm((prev) => ({
+                            ...prev,
+                            tolerances: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Синоніми артикулу
+                    </label>
+                    <textarea
+                      className="w-full px-3 py-2 border rounded-lg min-h-[120px] font-mono text-xs"
+                      value={masterForm.synonymsText}
+                      onChange={(e) =>
+                        setMasterForm((prev) => ({
+                          ...prev,
+                          synonymsText: e.target.value,
+                        }))
+                      }
+                      placeholder="Кожен синонім з нового рядка або через кому"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      При збереженні синоніми нормалізуються так само, як артикул у пошуку.
+                    </p>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <h4 className="text-sm font-semibold text-rose-700">
+                      Видалити master-дані
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Видаляється тільки запис у productMasterData. Сам товар у каталозі,
+                      його brand/id/name/offers та поточні поля products не змінюються.
+                    </p>
+                    <button
+                      className="mt-3 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm disabled:opacity-60"
+                      onClick={handleDeleteMasterData}
+                      disabled={savingMasterData || deletingMasterData}
+                    >
+                      {deletingMasterData ? "Видалення..." : "Видалити master-дані"}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm disabled:opacity-60"
+                  onClick={closeMasterModal}
+                  disabled={savingMasterData || deletingMasterData}
+                >
+                  Скасувати
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60"
+                  onClick={handleSaveMasterData}
+                  disabled={loadingMasterData || savingMasterData || deletingMasterData}
+                >
+                  {savingMasterData ? "Збереження..." : "Зберегти"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Модалка створення замовлення */}

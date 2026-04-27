@@ -16,6 +16,12 @@ let productMasterDataCache = null;
 let brandSynonymsCache = null; // Map of normalizedOldBrand -> canonicalBrand
 let cacheExpiry = 0;
 
+function clearMasterDataCache() {
+  productMasterDataCache = null;
+  brandSynonymsCache = null;
+  cacheExpiry = 0;
+}
+
 
 
 const str = (v, max = 500) => {
@@ -392,5 +398,6 @@ module.exports = {
   removeProduct,
   getProductMasterData,
   findCanonicalArticleByAnyFormat,
+  clearMasterDataCache,
   _getProductMasterDataCache: () => productMasterDataCache,
 };
