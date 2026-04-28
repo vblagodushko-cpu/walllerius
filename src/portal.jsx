@@ -354,7 +354,7 @@ function PortalApp() {
 
     try {
       const baseCol = collection(db, `/artifacts/${appId}/public/data/products`);
-      const PAGE_SIZE = 50;
+      const PAGE_SIZE = 150;
       const clauses = [
         where('brand', '==', brandName),
         orderBy('brand'),
@@ -451,7 +451,7 @@ function PortalApp() {
       }
 
     const baseCol = collection(db, `/artifacts/${appId}/public/data/products`);
-      const PAGE_SIZE = 50;
+      const PAGE_SIZE = 150;
       const clauses = [];
 
       // Тільки для category-груп (preset-групи не використовують цю функцію)

@@ -693,8 +693,8 @@ export default function PurchasesPage({ setStatus }) {
           bVal = b.bestSupplierOffer?.incomingPrice || 0;
           break;
         case "difference":
-          aVal = Math.abs(a.difference || 0);
-          bVal = Math.abs(b.difference || 0);
+          aVal = Math.abs(a.differencePercent || 0);
+          bVal = Math.abs(b.differencePercent || 0);
           break;
         default:
           return 0;
@@ -1327,7 +1327,18 @@ export default function PurchasesPage({ setStatus }) {
                   ` (з ${repriceProducts[repriceTab]?.length || 0})`}
               </div>
               <div className="overflow-x-auto border rounded-xl">
-                <table className="min-w-full text-sm">
+                <table className="min-w-[980px] w-full table-fixed text-sm">
+                  <colgroup>
+                    <col className="w-[9%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[24%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[13%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[7%]" />
+                  </colgroup>
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("brand")}>
@@ -1340,19 +1351,19 @@ export default function PurchasesPage({ setStatus }) {
                       <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("stock")}>
                         Залишок {getRepriceSortIcon("stock")}
                       </th>
-                      <th className="px-3 py-2 text-left">Останній постачальник</th>
                       <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("warehousePrice")}>
-                        Вхідна Мій склад {getRepriceSortIcon("warehousePrice")}
+                        <span className="block leading-tight">Вхідна</span>
+                        <span className="text-[11px] font-normal text-slate-500">Мій склад {getRepriceSortIcon("warehousePrice")}</span>
                       </th>
                       <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("bestPrice")}>
-                        Найкраща пропозиція {getRepriceSortIcon("bestPrice")}
+                        <span className="block leading-tight">Краща</span>
+                        <span className="text-[11px] font-normal text-slate-500">пропозиція {getRepriceSortIcon("bestPrice")}</span>
                       </th>
                       <th className="px-3 py-2 text-left cursor-pointer hover:bg-gray-100" onClick={() => handleRepriceSort("difference")}>
                         Різниця {getRepriceSortIcon("difference")}
                       </th>
                       <th className="px-3 py-2 text-left">Статус</th>
-                      <th className="px-3 py-2 text-left">Топ пропозицій</th>
-                      <th className="px-3 py-2 text-left">Дія</th>
+                      <th className="px-3 py-2 text-left">Топ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1373,10 +1384,10 @@ export default function PurchasesPage({ setStatus }) {
                               : "",
                           ].join(" ")}
                         >
-                          <td className="px-3 py-2 whitespace-nowrap">{product.brand || "—"}</td>
+                          <td className="px-3 py-2 whitespace-nowrap truncate">{product.brand || "—"}</td>
                           <td className="px-3 py-2 whitespace-nowrap">
                             <div className="flex items-center gap-1">
-                              <span>{product.id || "—"}</span>
+                              <span className="truncate">{product.id || "—"}</span>
                               {product.id && (
                                 <button
                                   type="button"
@@ -1391,21 +1402,31 @@ export default function PurchasesPage({ setStatus }) {
                               )}
                             </div>
                           </td>
-                          <td className="px-3 py-2 min-w-[220px]">{product.name || "—"}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{product.stock}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{product.lastSupplier}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            {product.warehouseIncomingPrice > 0 ? product.warehouseIncomingPrice.toFixed(2) : "—"}
+                          <td className="px-3 py-2">
+                            <div className="line-clamp-2" title={product.name || ""}>
+                              {product.name || "—"}
+                            </div>
                           </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{product.stock}</td>
                           <td className="px-3 py-2 whitespace-nowrap">
+                            <div className="flex flex-col">
+                              <span className="font-medium">
+                                {product.warehouseIncomingPrice > 0 ? product.warehouseIncomingPrice.toFixed(2) : "—"}
+                              </span>
+                              <span className="text-[11px] leading-tight text-slate-500">
+                                {product.lastSupplier || "—"}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
                             {product.bestSupplierOffer ? (
                               <div className="flex flex-col">
-                                <span className="font-medium">{formatSupplierName(product.bestSupplierOffer.supplier)}</span>
+                                <span className="font-medium truncate">{formatSupplierName(product.bestSupplierOffer.supplier)}</span>
                                 <span className="text-blue-600">{product.bestSupplierOffer.incomingPrice.toFixed(2)}</span>
                                 <span className="text-xs text-slate-500">наявність: {product.bestSupplierOffer.stock}</span>
                               </div>
                             ) : (
-                              <span className="text-slate-400">Немає в наявності</span>
+                              <span className="text-xs text-slate-400">немає</span>
                             )}
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap">
@@ -1420,37 +1441,47 @@ export default function PurchasesPage({ setStatus }) {
                               <span className="text-slate-400">—</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            {repriceMark ? (
-                              <div className="flex flex-col">
-                                <span
-                                  className={[
-                                    "inline-flex w-fit px-2 py-0.5 rounded-full border text-xs font-medium",
-                                    repriceMarkStale
-                                      ? "bg-amber-50 text-amber-700 border-amber-200"
-                                      : "bg-emerald-50 text-emerald-700 border-emerald-200",
-                                  ].join(" ")}
-                                >
-                                  {repriceMarkStale ? "Переоцінено давно" : "Переоцінено"}
-                                </span>
-                                <span className="text-xs text-slate-500 mt-1">
-                                  {formatDateTime(repriceMark.markedAtMs || repriceMark.markedAt)}
-                                </span>
-                                {repriceMarkStale && (
-                                  <span className="text-xs text-amber-600 mt-0.5">
-                                    старше {REPRICE_MARK_STALE_DAYS} днів
+                          <td className="px-3 py-2">
+                            <div className="flex items-start gap-2">
+                              {repriceMark ? (
+                                <div className="flex min-w-0 flex-col">
+                                  <span
+                                    className={[
+                                      "inline-flex w-fit px-2 py-0.5 rounded-full border text-xs font-medium",
+                                      repriceMarkStale
+                                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                                        : "bg-emerald-50 text-emerald-700 border-emerald-200",
+                                    ].join(" ")}
+                                  >
+                                    {repriceMarkStale ? "Переоцінено давно" : "Переоцінено"}
                                   </span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 text-xs">не позначено</span>
-                            )}
+                                  <span className="text-xs text-slate-500 mt-1 truncate">
+                                    {formatDateTime(repriceMark.markedAtMs || repriceMark.markedAt)}
+                                  </span>
+                                  {repriceMarkStale && (
+                                    <span className="text-xs text-amber-600 mt-0.5">
+                                      старше {REPRICE_MARK_STALE_DAYS} днів
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 text-xs mt-1">ні</span>
+                              )}
+                              <button
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                                onClick={() => markProductRepriced(product)}
+                                disabled={markingRepriceDocId === product.docId}
+                                title={repriceMark ? "Оновити мітку переоцінки" : "Позначити переоціненим"}
+                              >
+                                {markingRepriceDocId === product.docId ? "…" : repriceMark ? "↻" : "✓"}
+                              </button>
+                            </div>
                           </td>
                           <td className="px-3 py-2 align-top">
                             {topOffers.length > 0 ? (
                               <div className="space-y-1">
                                 {topOffers.map((offer, idx) => (
-                                  <div key={`${offer.supplier}-${idx}`} className="text-xs text-gray-700">
+                                  <div key={`${offer.supplier}-${idx}`} className="truncate text-xs text-gray-700" title={`${formatSupplierName(offer.supplier)}: ${offer.incomingPrice.toFixed(2)} (${offer.stock})`}>
                                     <span className="font-medium">{formatSupplierName(offer.supplier)}</span>
                                     {": "}
                                     <span className="text-blue-600">{offer.incomingPrice.toFixed(2)}</span>
@@ -1459,28 +1490,15 @@ export default function PurchasesPage({ setStatus }) {
                                 ))}
                               </div>
                             ) : (
-                              <span className="text-gray-400 text-xs">немає в наявності</span>
+                              <span className="text-gray-400 text-xs">—</span>
                             )}
-                          </td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            <button
-                              className="px-3 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs disabled:opacity-50"
-                              onClick={() => markProductRepriced(product)}
-                              disabled={markingRepriceDocId === product.docId}
-                            >
-                              {markingRepriceDocId === product.docId
-                                ? "Збереження..."
-                                : repriceMark
-                                  ? "Оновити мітку"
-                                  : "Позначити"}
-                            </button>
                           </td>
                         </tr>
                       );
                     })}
                     {filteredRepriceProducts.length === 0 && (
                       <tr>
-                        <td className="px-3 py-8 text-center text-gray-500" colSpan={11}>
+                        <td className="px-3 py-8 text-center text-gray-500" colSpan={9}>
                           Немає товарів у цій вкладці
                         </td>
                       </tr>

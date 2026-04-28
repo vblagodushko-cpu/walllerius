@@ -20,8 +20,6 @@ const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
   console.error("VITE_PROJECT_ID environment variable is required");
 }
-const MAX_PRODUCTS = 300;
-
 /** Тип ціни «вхідна» — оцінка як у PurchasesPage: роздріб × коефіцієнт */
 const PRICE_TYPE_INCOMING = "вхідна";
 const INCOMING_FROM_RETAIL_COEF = 0.66667;
@@ -46,9 +44,9 @@ function estimateIncomingFromRetail(publicPrices) {
 
 /**
  * Admin › ProductsPage
- * - Завантаження тільки по кнопці "Пошук" (без автоматичної загрузки)
+ * - Завантаження по вибору бренду/category-папки або кнопці "Пошук"
  * - Фільтри: бренд (серверний, через кеш брендів), артикул (серверний), постачальник (клієнтська дорізка)
- * - Ліміт 300 товарів
+ * - Адмінка завантажує весь вибраний бренд/category-зріз, повторні відкриття беруться з кешу
  * - Відображення: один рядок на offer з об'єднаними комірками для бренду, артикулу та назви (rowspan)
  * - Сортування offers: спочатку "Мій склад", потім партнери по зростанню ціни
  * - Перемикач цінової політики (вхідна за замовчуванням, роздріб, ціна 1–3, ціна опт)
@@ -124,8 +122,9 @@ export default function ProductsPage() {
   const [savingMasterData, setSavingMasterData] = useState(false);
   const [deletingMasterData, setDeletingMasterData] = useState(false);
 
-  // Кеш товарів по брендах (ключ: brandId, значення: { products })
+  // Кеш товарів по брендах/category-групах, щоб повторні кліки не робили зайві reads
   const brandCacheRef = useRef(new Map());
+  const categoryGroupCacheRef = useRef(new Map());
   
   // Завантаження featured products
   const loadFeaturedProducts = useCallback(async () => {
@@ -248,14 +247,9 @@ export default function ProductsPage() {
           query(collection(db, `/artifacts/${appId}/public/meta/brandFolders`))
         );
         const groups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        // Сортуємо групи: спочатку category, потім preset
         groups.sort((a, b) => {
-          const aType = a.groupType || (a.filterType === 'category' ? 'category' : 'preset');
-          const bType = b.groupType || (b.filterType === 'category' ? 'category' : 'preset');
-          if (aType !== bType) {
-            return aType === 'category' ? -1 : 1;
-          }
-          return String(a.name || a.id).localeCompare(String(b.name || b.id));
+          return (a.order || 0) - (b.order || 0)
+            || String(a.name || a.id).localeCompare(String(b.name || b.id), "uk");
         });
         setProductGroups(groups);
       } catch (e) {
@@ -326,8 +320,11 @@ export default function ProductsPage() {
           collection(db, `/artifacts/${appId}/public/meta/categories`)
         );
         const categories = snap.docs
-          .map((d) => ({ id: d.id, name: d.data().name || d.id }))
-          .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "uk"));
+          .map((d) => ({ id: d.id, ...d.data(), name: d.data().name || d.id }))
+          .sort((a, b) =>
+            (a.order || 0) - (b.order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "uk")
+          );
         setCategoriesList(categories);
       } catch (e) {
         console.error("Помилка завантаження категорій", e);
@@ -695,6 +692,72 @@ export default function ProductsPage() {
     }
   }, [orderModalProduct, orderModalOffer, orderForm, suppliers, closeOrderModal]);
 
+  const loadProductsByGroup = useCallback(async (groupId) => {
+    if (!groupId) {
+      setProducts([]);
+      return;
+    }
+
+    const cached = categoryGroupCacheRef.current.get(groupId);
+    if (cached) {
+      setProducts(cached.products);
+      return;
+    }
+
+    const group = productGroups.find(g => g.id === groupId);
+    if (!group) {
+      setProducts([]);
+      return;
+    }
+
+    const groupType = group.groupType || (group.filterType === "category" ? "category" : "preset");
+    const categories = Array.isArray(group.categories)
+      ? group.categories.map((cat) => String(cat || "").trim()).filter(Boolean)
+      : [];
+
+    if (groupType !== "category" || categories.length === 0) {
+      setProducts([]);
+      return;
+    }
+
+    if (categories.length > 30) {
+      setProducts([]);
+      setStatusMessage({
+        type: "error",
+        text: "У category-папці більше 30 категорій. Firestore не дозволяє один array-contains-any запит на такий список.",
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const baseRef = collection(db, `/artifacts/${appId}/public/data/products`);
+      const clauses = [
+        categories.length === 1
+          ? where("categories", "array-contains", categories[0])
+          : where("categories", "array-contains-any", categories),
+        orderBy("brand"),
+        orderBy("name"),
+      ];
+
+      const q = query(baseRef, ...clauses);
+      const snap = await getDocs(q);
+      const docs = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+
+      categoryGroupCacheRef.current.set(groupId, { products: docs });
+      setProducts(docs);
+    } catch (e) {
+      console.error("Помилка завантаження товарів category-групи", e);
+      setProducts([]);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося завантажити товари category-папки",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [productGroups]);
+
   // Функція пошуку товарів
   const handleSearch = useCallback(async () => {
     setLoading(true);
@@ -714,7 +777,12 @@ export default function ProductsPage() {
         return;
       }
       
-      // Якщо немає артикулу - шукаємо по бренду (як раніше)
+      if (selectedGroup) {
+        await loadProductsByGroup(selectedGroup);
+        return;
+      }
+
+      // Якщо немає артикулу - шукаємо по бренду
       if (!selectedBrand) {
         setProducts([]);
         setLoading(false);
@@ -738,13 +806,9 @@ export default function ProductsPage() {
             clauses.push(where("brand", "==", brandObj.name));
       }
       
-      // Сортування
       clauses.push(orderBy("brand"));
       clauses.push(orderBy("name"));
-      
-      // Ліміт
-      clauses.push(limit(MAX_PRODUCTS));
-      
+
       const q = query(baseRef, ...clauses);
       const snap = await getDocs(q);
       const docs = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
@@ -759,7 +823,7 @@ export default function ProductsPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedBrand, articleSearch, brandsList]);
+  }, [selectedBrand, selectedGroup, articleSearch, brandsList, loadProductsByGroup]);
 
   // Автоматичний пошук при виборі бренда (якщо артикул порожній)
   useEffect(() => {
@@ -839,14 +903,16 @@ export default function ProductsPage() {
   // Очищення фільтрів
   const handleClear = () => {
     setSelectedBrand("");
+    setSelectedGroup(null);
+    setExpandedGroup(null);
     setBrandSearch("");
     setArticleSearch("");
     setSelectedSupplier("all");
     setProducts([]);
     setDisplayRows([]);
     setSelectedClient(null);
+    setClientPricingRules(null);
     setClientSearch("");
-    setClientSearchResults([]);
   };
 
   // Групування рядків по товарах для rowspan
@@ -1016,6 +1082,8 @@ export default function ProductsPage() {
                     setExpandedGroup(null);
                     setBrandSearch("");
                     setArticleSearch("");
+                    setProducts([]);
+                    setDisplayRows([]);
                   }}
                 >
                   Очистити вибір
@@ -1058,15 +1126,19 @@ export default function ProductsPage() {
                                 }
                               } else {
                                 setExpandedGroup(group.id);
-                                setSelectedGroup(group.id);
+                                setSelectedGroup(null);
+                                setSelectedBrand("");
+                                setArticleSearch("");
+                                setProducts([]);
+                                setDisplayRows([]);
                               }
                             }
                           } else if (groupType === 'category') {
-                            // Для category-груп - очищаємо вибір (категорії не підтримуються в адмін панелі)
-                            setSelectedGroup(null);
+                            setSelectedGroup(group.id);
                             setSelectedBrand("");
                             setExpandedGroup(null);
                             setArticleSearch("");
+                            loadProductsByGroup(group.id);
                           }
                         }}
                       >
@@ -1077,7 +1149,7 @@ export default function ProductsPage() {
                       </button>
                       {isExpanded && groupType === 'preset' && group.brands && group.brands.length > 1 && (
                         <div className="border-t border-gray-200">
-                          {group.brands.map((brandName, idx) => {
+                          {[...group.brands].sort((a, b) => String(a).localeCompare(String(b), "uk")).map((brandName, idx) => {
                             const brand = brandsList.find(b => b.name === brandName);
                             if (!brand) return null;
                             const isBrandSelected = selectedBrand === brand.id;
@@ -1091,10 +1163,15 @@ export default function ProductsPage() {
                                 }`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setSelectedBrand(isBrandSelected ? "" : brand.id);
+                                  const nextBrandId = isBrandSelected ? "" : brand.id;
+                                  setSelectedBrand(nextBrandId);
                                   setSelectedGroup(null);
                                   setExpandedGroup(null);
                                   setArticleSearch("");
+                                  if (!nextBrandId) {
+                                    setProducts([]);
+                                    setDisplayRows([]);
+                                  }
                                 }}
                               >
                                 {brandName}
@@ -1143,10 +1220,15 @@ export default function ProductsPage() {
                               : 'hover:bg-gray-50'
                           }`}
                           onClick={() => {
-                            setSelectedBrand(isSelected ? "" : b.id);
+                            const nextBrandId = isSelected ? "" : b.id;
+                            setSelectedBrand(nextBrandId);
                             setSelectedGroup(null);
                             setExpandedGroup(null);
                             setArticleSearch("");
+                            if (!nextBrandId) {
+                              setProducts([]);
+                              setDisplayRows([]);
+                            }
                           }}
                         >
                           {b.name || b.id}
