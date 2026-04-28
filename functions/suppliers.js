@@ -257,11 +257,14 @@ async function processAndSaveProducts(rows, supplier) {
           needsReview: false,
         });
 
-        // Якщо артикул у CSV є синонімом канонічного (productId !== article),
-        // видаляємо старий offer постачальника для синонімного артикулу,
-        // щоб не лишалось дублюючого продукту у колекції.
+        // Якщо артикул у CSV є синонімом канонічного (productId !== article):
+        // 1. Додаємо canonical ключ у normalizedProductKeys, щоб Cleanup не видалив
+        //    щойно записаний offer на canonical (бо в CSV є тільки синонімний артикул).
+        // 2. Видаляємо старий offer постачальника для синонімного артикулу,
+        //    щоб не лишалось дублюючого продукту у колекції.
         const canonicalArticle = normalizeArticle(productId);
         if (canonicalArticle && canonicalArticle !== article) {
+          normalizedProductKeys.add(`${normalizedBrand}-${canonicalArticle}`);
           try {
             await removeProduct({ supplier: supplierNorm, id: article, brand: normalizedBrand });
           } catch (cleanupErr) {
