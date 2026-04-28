@@ -256,6 +256,24 @@ async function processAndSaveProducts(rows, supplier) {
           synonyms: masterData.synonyms || [],
           needsReview: false,
         });
+
+        // Якщо артикул у CSV є синонімом канонічного (productId !== article),
+        // видаляємо старий offer постачальника для синонімного артикулу,
+        // щоб не лишалось дублюючого продукту у колекції.
+        const canonicalArticle = normalizeArticle(productId);
+        if (canonicalArticle && canonicalArticle !== article) {
+          try {
+            await removeProduct({ supplier: supplierNorm, id: article, brand: normalizedBrand });
+          } catch (cleanupErr) {
+            logger.warn("Failed to remove synonym offer", {
+              supplier: supplierNorm,
+              synonymArticle: article,
+              canonicalArticle,
+              brand: normalizedBrand,
+              error: cleanupErr.message,
+            });
+          }
+        }
       } else {
         await upsertProduct({
           supplier: supplierNorm,
