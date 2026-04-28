@@ -40,6 +40,18 @@ const toPrice = (v) => {
   return round2(m ? Number(m[0]) : 0);
 };
 
+function stripUndefined(value) {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, stripUndefined(v)])
+    );
+  }
+  return value;
+}
+
 function parseRuleObject(obj) {
   if (!obj) return null;
   const flatEn = {
@@ -275,7 +287,7 @@ async function processAndSaveProducts(rows, supplier) {
     ok, 
     skipped, 
     removed, 
-    filteredOut: filterByMaster ? filteredOut : undefined,
+    filteredOut,
     total: rows.length,
     supplier: supplierNorm
   });
@@ -340,7 +352,7 @@ async function processAndSaveProducts(rows, supplier) {
     }
   }
 
-  return { ok, skipped, removed, filteredOut: filterByMaster ? filteredOut : undefined, total: rows.length };
+  return { ok, skipped, removed, filteredOut, total: rows.length };
 }
 
 async function parseCsvFromUrlUtf8_STRICT(url) {
@@ -455,7 +467,7 @@ exports.importSupplierCsv = onCall({
     ? supplier
     : { id: supplier?.id || supplier?.name || "url", name: supplier?.name || "url" };
 
-  const result = await processAndSaveProducts(rows, sup);
+  const result = stripUndefined(await processAndSaveProducts(rows, sup));
     
     // Оновлюємо job з результатом
     if (jobRef) {

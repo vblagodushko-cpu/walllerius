@@ -800,11 +800,15 @@ export default function SuppliersPage({ setStatus }) {
         supplier: { id: s.id, name: s.name },
         jobId
       }).catch((error) => {
-        // Якщо помилка при запуску
-        updateDoc(jobRef, {
-          status: "failed",
-          completedAt: Timestamp.now(),
-          error: error?.message || "Помилка запуску імпорту"
+        console.error("Помилка запуску URL-імпорту", error);
+        setStatus?.({
+          type: "error",
+          message: `Помилка запуску оновлення для "${s.name}": ${error?.message || "Не вдалося запустити імпорт"}`
+        });
+        setUpdatingUrls(prev => {
+          const next = new Set(prev);
+          next.delete(s.id);
+          return next;
         });
       });
       
@@ -1064,12 +1068,12 @@ export default function SuppliersPage({ setStatus }) {
         data,
         jobId 
       }).catch((error) => {
-        // Якщо помилка при запуску - оновлюємо статус
-        updateDoc(jobRef, {
-          status: "failed",
-          completedAt: Timestamp.now(),
-          error: error?.message || "Помилка запуску імпорту"
-        });
+        console.error("Помилка запуску ручного імпорту", error);
+        setStatus?.({ type: "error", message: error?.message || "Помилка запуску імпорту" });
+        if (importJobUnsubscribeRef.current) {
+          importJobUnsubscribeRef.current();
+          importJobUnsubscribeRef.current = null;
+        }
       });
       
       // Підписуємося на зміни job документа
