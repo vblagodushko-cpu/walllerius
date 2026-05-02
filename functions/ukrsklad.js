@@ -459,7 +459,7 @@ exports.currencyRatesSync = onSchedule(
 
 exports.ukrSkladSync = onSchedule(
   { 
-    schedule: "0 9-17/2 * * 1-5", // Кожні 2 години з 9 до 17 (9, 11, 13, 15, 17)
+    schedule: "0 9-17/2 * * *", // Кожні 2 години з 9 до 17 (9, 11, 13, 15, 17), усі дні тижня
     timeZone: "Europe/Kyiv", 
     region: REGION,
     maxInstances: 1,  // Обмеження: тільки один екземпляр одночасно
