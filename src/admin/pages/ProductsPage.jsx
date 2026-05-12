@@ -23,6 +23,18 @@ if (!appId) {
 /** Тип ціни «вхідна» — оцінка як у PurchasesPage: роздріб × коефіцієнт */
 const PRICE_TYPE_INCOMING = "вхідна";
 const INCOMING_FROM_RETAIL_COEF = 0.66667;
+const MASTER_MONITOR_PAGE_SIZE = 100;
+const MASTER_FIELD_OPTIONS = [
+  { key: "masterExists", label: "Master-картка існує" },
+  { key: "correctName", label: "Правильна назва" },
+  { key: "categories", label: "Категорії" },
+  { key: "pack", label: "Фасування" },
+  { key: "tolerances", label: "Допуски" },
+  { key: "synonyms", label: "Синоніми" },
+];
+const MASTER_FIELD_LABELS = Object.fromEntries(
+  MASTER_FIELD_OPTIONS.map((field) => [field.key, field.label])
+);
 
 function splitTextList(value) {
   return String(value || "")
@@ -40,6 +52,31 @@ function estimateIncomingFromRetail(publicPrices) {
   const retail = Number(publicPrices["роздріб"]) || 0;
   if (retail <= 0) return null;
   return Math.round(retail * INCOMING_FROM_RETAIL_COEF * 100) / 100;
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = typeof value === "number" ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getMissingMasterFields(data, selectedFields) {
+  return selectedFields.filter((field) => {
+    if (field === "masterExists") return data.masterExists === false;
+    if (field === "correctName") return !String(data.correctName || data.name || "").trim();
+    if (field === "categories") return !Array.isArray(data.categories) || data.categories.length === 0;
+    if (field === "pack") return !String(data.pack || "").trim();
+    if (field === "tolerances") return !String(data.tolerances || "").trim();
+    if (field === "synonyms") return !Array.isArray(data.synonyms) || data.synonyms.length === 0;
+    return false;
+  });
 }
 
 /**
@@ -121,6 +158,15 @@ export default function ProductsPage() {
   const [loadingMasterData, setLoadingMasterData] = useState(false);
   const [savingMasterData, setSavingMasterData] = useState(false);
   const [deletingMasterData, setDeletingMasterData] = useState(false);
+
+  // Моніторинг заповненості master-даних
+  const [masterMonitorSupplier, setMasterMonitorSupplier] = useState("Мій склад");
+  const [masterMonitorFields, setMasterMonitorFields] = useState(["categories"]);
+  const [masterMonitorRows, setMasterMonitorRows] = useState([]);
+  const [masterMonitorCursor, setMasterMonitorCursor] = useState(null);
+  const [masterMonitorHasMore, setMasterMonitorHasMore] = useState(false);
+  const [masterMonitorScanned, setMasterMonitorScanned] = useState(0);
+  const [masterMonitorLoading, setMasterMonitorLoading] = useState(false);
 
   // Кеш товарів по брендах/category-групах, щоб повторні кліки не робили зайві reads
   const brandCacheRef = useRef(new Map());
@@ -357,6 +403,12 @@ export default function ProductsPage() {
         products: (cached.products || []).map(apply),
       });
     });
+    categoryGroupCacheRef.current.forEach((cached, key) => {
+      categoryGroupCacheRef.current.set(key, {
+        ...cached,
+        products: (cached.products || []).map(apply),
+      });
+    });
   }, []);
 
   const openMasterModal = useCallback(async (product) => {
@@ -371,17 +423,16 @@ export default function ProductsPage() {
     });
 
     try {
-      const masterDocId = `${product.brand}__${normalizeArticle(product.id)}`;
-      const masterRef = doc(db, `/artifacts/${appId}/public/data/productMasterData`, masterDocId);
-      const snap = await getDoc(masterRef);
-      if (snap.exists()) {
-        const data = snap.data() || {};
+      const call = httpsCallable(functions, "peekProductMasterData");
+      const { data } = await call({ brand: product.brand, id: product.id });
+      if (data?.exists && data?.data) {
+        const md = data.data;
         setMasterForm({
-          correctName: data.correctName || product.name || "",
-          categories: Array.isArray(data.categories) ? data.categories : [],
-          pack: data.pack || "",
-          tolerances: data.tolerances || "",
-          synonymsText: joinTextList(data.synonyms),
+          correctName: md.correctName || product.name || "",
+          categories: Array.isArray(md.categories) ? md.categories : [],
+          pack: md.pack || "",
+          tolerances: md.tolerances || "",
+          synonymsText: joinTextList(md.synonyms),
         });
       }
     } catch (e) {
@@ -427,6 +478,22 @@ export default function ProductsPage() {
         synonyms: splitTextList(masterForm.synonymsText),
       };
       applyProductPatch(masterModalProduct.docId, productPatch);
+      setMasterMonitorRows((prev) =>
+        prev.flatMap((row) => {
+          if (row.productDocId !== masterModalProduct.docId) return [row];
+          const nextRow = {
+            ...row,
+            ...productPatch,
+            name: productPatch.name || row.name,
+            correctName: productPatch.name || masterForm.correctName,
+            masterExists: true,
+            masterUpdatedAt: Date.now(),
+            masterDataUpdatedAt: Date.now(),
+          };
+          const missingFields = getMissingMasterFields(nextRow, masterMonitorFields);
+          return missingFields.length ? [{ ...nextRow, missingFields }] : [];
+        })
+      );
       setStatusMessage({ type: "success", text: "Master-дані товару оновлено" });
       closeMasterModal();
     } catch (e) {
@@ -438,7 +505,7 @@ export default function ProductsPage() {
     } finally {
       setSavingMasterData(false);
     }
-  }, [masterModalProduct, masterForm, applyProductPatch, closeMasterModal]);
+  }, [masterModalProduct, masterForm, masterMonitorFields, applyProductPatch, closeMasterModal]);
 
   const handleDeleteMasterData = useCallback(async () => {
     if (!masterModalProduct) return;
@@ -472,6 +539,70 @@ export default function ProductsPage() {
       setDeletingMasterData(false);
     }
   }, [masterModalProduct, closeMasterModal]);
+
+  const toggleMasterMonitorField = useCallback((field) => {
+    setMasterMonitorFields((prev) => {
+      if (prev.includes(field)) {
+        const next = prev.filter((item) => item !== field);
+        return next.length ? next : prev;
+      }
+      return [...prev, field];
+    });
+  }, []);
+
+  const runMasterMonitor = useCallback(async ({ append = false } = {}) => {
+    if (!masterMonitorFields.length) {
+      setStatusMessage({ type: "error", text: "Оберіть хоча б одне поле для перевірки." });
+      return;
+    }
+
+    setMasterMonitorLoading(true);
+    try {
+      const call = httpsCallable(functions, "monitorProductMasterData");
+      const { data } = await call({
+        supplier: masterMonitorSupplier,
+        fields: masterMonitorFields,
+        pageSize: MASTER_MONITOR_PAGE_SIZE,
+        cursor: append ? masterMonitorCursor : null,
+      });
+
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      setMasterMonitorRows((prev) => {
+        if (!append) return rows;
+        const map = new Map(prev.map((row) => [row.productDocId, row]));
+        rows.forEach((row) => map.set(row.productDocId, row));
+        return Array.from(map.values());
+      });
+      setMasterMonitorCursor(data?.nextCursor || null);
+      setMasterMonitorHasMore(Boolean(data?.hasMore));
+      setMasterMonitorScanned((prev) => (append ? prev : 0) + Number(data?.scannedCount || 0));
+      setStatusMessage({
+        type: "success",
+        text: `Моніторинг завершено: знайдено ${rows.length}, проскановано ${data?.scannedCount || 0}.`,
+      });
+    } catch (e) {
+      console.error("Помилка моніторингу master-даних", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося промоніторити master-дані",
+      });
+    } finally {
+      setMasterMonitorLoading(false);
+    }
+  }, [masterMonitorSupplier, masterMonitorFields, masterMonitorCursor]);
+
+  const openMasterModalFromMonitor = useCallback((row) => {
+    openMasterModal({
+      docId: row.productDocId,
+      brand: row.brand,
+      id: row.id,
+      name: row.name,
+      categories: Array.isArray(row.categories) ? row.categories : [],
+      pack: row.pack || "",
+      tolerances: row.tolerances || "",
+      synonyms: Array.isArray(row.synonyms) ? row.synonyms : [],
+    });
+  }, [openMasterModal]);
 
   // Фільтрований список брендів для бічної панелі
   const filteredBrands = useMemo(() => {
@@ -958,6 +1089,7 @@ export default function ProductsPage() {
   const tabsItems = [
     { key: "catalog", label: "Каталог" },
     { key: "featured", label: "Рекомендовані" },
+    { key: "masterData", label: "Мастер-дані" },
   ];
 
   const masterCategoryOptions = useMemo(() => {
@@ -973,6 +1105,22 @@ export default function ProductsPage() {
       String(a.name || "").localeCompare(String(b.name || ""), "uk")
     );
   }, [categoriesList, masterForm.categories]);
+
+  const masterMonitorSupplierOptions = useMemo(() => {
+    const map = new Map([["Мій склад", "Мій склад"]]);
+    suppliers.forEach((supplier) => {
+      const name = supplier.name || supplier.id;
+      if (name) map.set(name, name);
+    });
+    suppliersList.forEach((name) => {
+      if (name) map.set(name, name);
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      if (a === "Мій склад") return -1;
+      if (b === "Мій склад") return 1;
+      return String(a).localeCompare(String(b), "uk");
+    });
+  }, [suppliers, suppliersList]);
   
   return (
     <div className="bg-white rounded-2xl shadow p-3 sm:p-4">
@@ -1041,6 +1189,168 @@ export default function ProductsPage() {
               </table>
             </div>
           )}
+        </div>
+      ) : activeTab === "masterData" ? (
+        <div className="space-y-4">
+          <div className="rounded-xl border bg-slate-50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="min-w-[220px]">
+                <label className="mb-1 block text-xs font-medium text-slate-600">
+                  Постачальник
+                </label>
+                <select
+                  className="w-full rounded border px-3 py-2"
+                  value={masterMonitorSupplier}
+                  onChange={(e) => {
+                    setMasterMonitorSupplier(e.target.value);
+                    setMasterMonitorRows([]);
+                    setMasterMonitorCursor(null);
+                    setMasterMonitorHasMore(false);
+                    setMasterMonitorScanned(0);
+                  }}
+                >
+                  {masterMonitorSupplierOptions.map((supplierName) => (
+                    <option key={supplierName} value={supplierName}>
+                      {supplierName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex-1">
+                <div className="mb-1 text-xs font-medium text-slate-600">
+                  Перевірити поля
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {MASTER_FIELD_OPTIONS.map((field) => (
+                    <label
+                      key={field.key}
+                      className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1.5 text-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={masterMonitorFields.includes(field.key)}
+                        onChange={() => {
+                          toggleMasterMonitorField(field.key);
+                          setMasterMonitorRows([]);
+                          setMasterMonitorCursor(null);
+                          setMasterMonitorHasMore(false);
+                          setMasterMonitorScanned(0);
+                        }}
+                      />
+                      <span>{field.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-white hover:bg-indigo-700 disabled:opacity-60"
+                onClick={() => runMasterMonitor({ append: false })}
+                disabled={masterMonitorLoading || masterMonitorFields.length === 0}
+              >
+                {masterMonitorLoading ? "Моніторинг..." : "Промоніторити"}
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Сторінка результату: {MASTER_MONITOR_PAGE_SIZE}. Система сканує товари вибраного постачальника
+              і показує тільки ті, де бракує вибраних master-полів.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+            <span>
+              Знайдено: <b>{masterMonitorRows.length}</b>
+            </span>
+            <span>
+              Проскановано: <b>{masterMonitorScanned}</b>
+            </span>
+            <span>
+              Постачальник: <b>{masterMonitorSupplier}</b>
+            </span>
+          </div>
+
+          <div className="overflow-auto rounded-xl border">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2 text-left">Бренд</th>
+                  <th className="px-3 py-2 text-left">Артикул</th>
+                  <th className="px-3 py-2 text-left">Назва</th>
+                  <th className="px-3 py-2 text-left">Залишок</th>
+                  <th className="px-3 py-2 text-left">Бракує</th>
+                  <th className="px-3 py-2 text-left">Остання зміна master</th>
+                  <th className="px-3 py-2 text-left">Оновлення offer</th>
+                  <th className="px-3 py-2 text-left">Дії</th>
+                </tr>
+              </thead>
+              <tbody>
+                {masterMonitorRows.map((row) => (
+                  <tr key={row.productDocId} className="border-t">
+                    <td className="px-3 py-2 whitespace-nowrap">{row.brand || "—"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{row.id || "—"}</td>
+                    <td className="px-3 py-2 min-w-[220px]">{row.name || "—"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{row.stock ?? 0}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {(row.missingFields || []).map((field) => (
+                          <span
+                            key={field}
+                            className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 border border-amber-200"
+                          >
+                            {MASTER_FIELD_LABELS[field] || field}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-slate-600">
+                      {formatDateTime(row.masterUpdatedAt || row.masterDataUpdatedAt)}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-slate-600">
+                      {formatDateTime(row.offerUpdatedAt)}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <button
+                        className="rounded bg-emerald-50 px-3 py-1 text-sm text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                        onClick={() => openMasterModalFromMonitor(row)}
+                      >
+                        Редагувати
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {!masterMonitorRows.length && !masterMonitorLoading && (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                      Натисніть “Промоніторити”, щоб знайти товари з незаповненими master-даними.
+                    </td>
+                  </tr>
+                )}
+                {masterMonitorLoading && (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                      Моніторинг master-даних...
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-500">
+              Якщо master-документ створений через старий XLSX-імпорт, дата останньої зміни може бути порожньою.
+            </div>
+            {masterMonitorHasMore && (
+              <button
+                className="rounded-xl bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 disabled:opacity-60"
+                onClick={() => runMasterMonitor({ append: true })}
+                disabled={masterMonitorLoading}
+              >
+                {masterMonitorLoading ? "Завантаження..." : "Завантажити ще"}
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-12 gap-4">

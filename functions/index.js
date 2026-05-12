@@ -294,7 +294,7 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     pack: safePack,
     tolerances: safeTolerances,
     synonyms: safeSynonyms,
-    needsReview: false,
+    masterDataUpdatedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
   if (safeCorrectName) {
@@ -323,6 +323,7 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     productPatch: {
       ...productPayload,
       updatedAt: null,
+      masterDataUpdatedAt: null,
       ...(safeCorrectName ? { name: safeCorrectName } : {}),
     },
     masterData: {
@@ -381,6 +382,230 @@ exports.deleteProductMasterData = onCall({ region: REGION, cors: true }, async (
     productDocId: cleanProductDocId,
     masterDocId,
     deleted: masterSnap.exists,
+  };
+});
+
+/**
+ * peekProductMasterData — прочитати майстер-картку через той самий резолвер, що імпорт/синки (normalizeBrandKey + кеш).
+ * Потрібен адмін. Без повного збігу регістру бренду у Firestore docId.
+ */
+exports.peekProductMasterData = onCall({ region: REGION, cors: true }, async (request) => {
+  if (!request.auth?.token?.admin) {
+    throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+  }
+
+  const { brand, id } = request.data || {};
+  const { getProductMasterData, normalizeArticle } = require("./shared");
+
+  const cleanBrand = str(brand, 120).replace(/\s{2,}/g, " ").trim();
+  const cleanId = normalizeArticle(id);
+  if (!cleanBrand || !cleanId) {
+    throw new HttpsError("invalid-argument", "brand та id обов'язкові.");
+  }
+
+  let raw = null;
+  try {
+    raw = await getProductMasterData(cleanBrand, cleanId);
+  } catch (e) {
+    logger.warn("peekProductMasterData lookup failed", { error: e.message, cleanBrand, cleanId });
+  }
+
+  if (!raw) {
+    return { success: true, exists: false, data: null };
+  }
+
+  const { _isSynonym, ...keep } = raw;
+  return {
+    success: true,
+    exists: true,
+    data: {
+      brand: keep.brand,
+      id: keep.id,
+      correctName: keep.correctName,
+      categories: keep.categories,
+      pack: keep.pack,
+      tolerances: keep.tolerances,
+      synonyms: keep.synonyms,
+    },
+  };
+});
+
+/**
+ * monitorProductMasterData - знаходить товари постачальника з незаповненими
+ * вибраними master-полями. Працює тільки для адмінів.
+ */
+exports.monitorProductMasterData = onCall({ region: REGION, cors: true }, async (request) => {
+  if (!request.auth?.token?.admin) {
+    throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+  }
+
+  const { supplier, fields, pageSize, cursor } = request.data || {};
+  const { normalizeArticle, normalizeSupplier, getProductMasterData } = require("./shared");
+
+  const cleanSupplier = normalizeSupplier(supplier || "Мій склад");
+  const allowedFields = new Set([
+    "masterExists",
+    "correctName",
+    "categories",
+    "pack",
+    "tolerances",
+    "synonyms",
+  ]);
+  const selectedFields = Array.isArray(fields)
+    ? fields.filter((field) => allowedFields.has(field))
+    : [];
+  const cleanPageSize = Math.min(Math.max(Number(pageSize) || 100, 1), 100);
+  const cleanCursor = Math.max(Number(cursor) || 0, 0);
+  const maxScanPerCall = 500;
+
+  if (!cleanSupplier) {
+    throw new HttpsError("invalid-argument", "supplier обов'язковий.");
+  }
+  if (!selectedFields.length) {
+    throw new HttpsError("invalid-argument", "Оберіть хоча б одне поле для перевірки.");
+  }
+
+  const toMillis = (value) => {
+    if (!value) return null;
+    if (typeof value.toMillis === "function") return value.toMillis();
+    if (typeof value.toDate === "function") return value.toDate().getTime();
+    if (typeof value._seconds === "number") return value._seconds * 1000;
+    return null;
+  };
+
+  const isMissing = (field, masterData) => {
+    if (!masterData) return true;
+    if (field === "masterExists") return false;
+    if (field === "correctName") return !str(masterData.correctName, 500).trim();
+    if (field === "categories") return !Array.isArray(masterData.categories) || masterData.categories.length === 0;
+    if (field === "pack") return !str(masterData.pack, 200).trim();
+    if (field === "tolerances") return !str(masterData.tolerances, 500).trim();
+    if (field === "synonyms") return !Array.isArray(masterData.synonyms) || masterData.synonyms.length === 0;
+    return false;
+  };
+
+  const supplierProductsCol = db.collection(`/artifacts/${APP_ID}/public/data/supplierProducts`);
+  const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
+
+  const rows = [];
+  let scannedCount = 0;
+  let nextCursor = cleanCursor || null;
+  let hasMore = false;
+  let currentOffset = cleanCursor;
+
+  while (rows.length < cleanPageSize && scannedCount < maxScanPerCall) {
+    const remainingScan = Math.min(100, maxScanPerCall - scannedCount, cleanPageSize - rows.length);
+    let supplierQuery = supplierProductsCol
+      .where("supplier", "==", cleanSupplier)
+      .offset(currentOffset)
+      .limit(remainingScan);
+
+    const supplierSnap = await supplierQuery.get();
+    if (supplierSnap.empty) {
+      hasMore = false;
+      break;
+    }
+
+    const supplierDocs = supplierSnap.docs;
+    scannedCount += supplierDocs.length;
+    currentOffset += supplierDocs.length;
+    nextCursor = currentOffset;
+    hasMore = supplierDocs.length === remainingScan;
+
+    const productRefs = supplierDocs
+      .map((docSnap) => docSnap.data()?.productDocId)
+      .filter(Boolean)
+      .map((productDocId) => productsCol.doc(productDocId));
+    const productSnaps = await Promise.all(productRefs.map((ref) => ref.get()));
+    const productByDocId = new Map();
+    productSnaps.forEach((productSnap) => {
+      if (productSnap.exists) productByDocId.set(productSnap.id, productSnap.data() || {});
+    });
+
+    const productPairs = [];
+    supplierDocs.forEach((docSnap) => {
+      const spData = docSnap.data() || {};
+      const productDocId = spData.productDocId;
+      const productData = productByDocId.get(productDocId);
+      if (!productDocId || !productData) return;
+
+      const brand = str(productData.brand, 120).replace(/\s{2,}/g, " ").trim();
+      const pid = normalizeArticle(productData.id);
+      if (!brand || !pid) return;
+
+      productPairs.push({ spData, productDocId, productData });
+    });
+
+    const masterResults = await Promise.all(
+      productPairs.map(({ productData }) =>
+        getProductMasterData(productData.brand, productData.id).catch((e) => {
+          logger.warn("monitor getProductMasterData failed", {
+            brand: productData.brand,
+            id: productData.id,
+            error: String(e.message || e),
+          });
+          return null;
+        })
+      )
+    );
+
+    for (let idx = 0; idx < productPairs.length; idx++) {
+      if (rows.length >= cleanPageSize) break;
+
+      const { spData, productDocId, productData } = productPairs[idx];
+      const masterData = masterResults[idx] || null;
+      const missingFields = selectedFields.filter((field) => isMissing(field, masterData));
+      if (!missingFields.length) continue;
+
+      const offer = Array.isArray(productData.offers)
+        ? productData.offers.find((item) => item?.supplier === cleanSupplier)
+        : null;
+
+      rows.push({
+        productDocId,
+        brand: productData.brand || "",
+        id: productData.id || "",
+        name: productData.name || "",
+        supplier: cleanSupplier,
+        stock: offer?.stock ?? 0,
+        missingFields,
+        masterExists: Boolean(masterData),
+        masterUpdatedAt: toMillis(masterData?.updatedAt),
+        productUpdatedAt: toMillis(productData.updatedAt),
+        masterDataUpdatedAt: toMillis(productData.masterDataUpdatedAt),
+        offerUpdatedAt: toMillis(offer?.updatedAt || spData.updatedAt),
+        categories: Array.isArray(masterData?.categories)
+          ? masterData.categories
+          : (Array.isArray(productData.categories) ? productData.categories : []),
+        pack: masterData?.pack || productData.pack || "",
+        tolerances: masterData?.tolerances || productData.tolerances || "",
+        synonyms: Array.isArray(masterData?.synonyms)
+          ? masterData.synonyms
+          : (Array.isArray(productData.synonyms) ? productData.synonyms : []),
+      });
+    }
+
+    if (!hasMore) break;
+  }
+
+  logger.info("Product master data monitored", {
+    uid: request.auth.uid,
+    supplier: cleanSupplier,
+    fields: selectedFields,
+    rows: rows.length,
+    scannedCount,
+    hasMore,
+  });
+
+  return {
+    success: true,
+    supplier: cleanSupplier,
+    fields: selectedFields,
+    pageSize: cleanPageSize,
+    rows,
+    nextCursor,
+    hasMore,
+    scannedCount,
   };
 });
 

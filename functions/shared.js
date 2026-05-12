@@ -15,6 +15,8 @@ const APP_ID = process.env.APP_ID || "embryo-project";
 let productMasterDataCache = null;
 let brandSynonymsCache = null; // Map of normalizedOldBrand -> canonicalBrand
 let cacheExpiry = 0;
+/** Одночасні виклики getProductMasterData (монітор тощо) не мають паралельно перезавантажувати кеш. */
+let loadAllCachesInFlight = null;
 
 function clearMasterDataCache() {
   productMasterDataCache = null;
@@ -69,70 +71,63 @@ function sanitizeDocId(docId) {
     .replace(/[^\w.-]/g, (m) => (m === "-" || m === "." ? m : "_"));
 }
 
-// Load all caches function
+// Load all caches function (single-flight: паралельні виклики чекають один і той самий завантаження)
 async function loadAllCaches() {
-  // #region agent log
-  const loadStart = Date.now();
-  const cacheValid = Date.now() < cacheExpiry && productMasterDataCache && brandSynonymsCache;
-  fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'shared.js:47',message:'loadAllCaches: entry',data:{cacheValid,currentTime:Date.now(),cacheExpiry},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
+  while (true) {
+    if (Date.now() < cacheExpiry && productMasterDataCache && brandSynonymsCache) {
+      return;
+    }
+    if (loadAllCachesInFlight) {
+      await loadAllCachesInFlight;
+      continue;
+    }
 
-  if (Date.now() < cacheExpiry && productMasterDataCache && brandSynonymsCache) {
-    return; // Cache is still valid
-  }
-  
-  try {
-    // #region agent log
-    const beforeLoad = Date.now();
-    // #endregion
+    loadAllCachesInFlight = (async () => {
+      try {
+        const [masterDataSnap, brandsSnap] = await Promise.all([
+          db.collection(`/artifacts/${APP_ID}/public/data/productMasterData`).get(),
+          db.collection(`/artifacts/${APP_ID}/public/data/brandSynonyms`).get(),
+        ]);
 
-    const [masterDataSnap, brandsSnap] = await Promise.all([
-      db.collection(`/artifacts/${APP_ID}/public/data/productMasterData`).get(),
-      db.collection(`/artifacts/${APP_ID}/public/data/brandSynonyms`).get()
-    ]);
-    
-    // #region agent log
-    const loadTime = Date.now() - beforeLoad;
-    fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'shared.js:56',message:'loadAllCaches: after load',data:{loadTimeMs:loadTime,masterDataCount:masterDataSnap.size,brandsCount:brandsSnap.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-    
-    // Cache product master data
-    productMasterDataCache = new Map();
-    masterDataSnap.docs.forEach(doc => {
-      const data = doc.data();
-      // Нормалізуємо основний артикул для індексації
-      const normalizedId = normalizeArticle(data.id || "");
-      const key = `${data.brand}__${normalizedId}`;
-      productMasterDataCache.set(key, data);
-      
-      // Also index by synonyms for quick lookup (нормалізуємо синоніми)
-      if (data.synonyms && Array.isArray(data.synonyms)) {
-        data.synonyms.forEach(syn => {
-          const normalizedSyn = normalizeArticle(syn);
-          const synKey = `${data.brand}__${normalizedSyn}`;
-          // Зберігаємо прапорець _isSynonym для логування, але дозволяємо повертати дані
-          productMasterDataCache.set(synKey, { ...data, _isSynonym: true });
+        productMasterDataCache = new Map();
+        masterDataSnap.docs.forEach((doc) => {
+          const data = doc.data();
+          const normalizedId = normalizeArticle(data.id || "");
+          const brandKey = normalizeBrandKey(data.brand || "");
+          const key = `${brandKey}__${normalizedId}`;
+          productMasterDataCache.set(key, data);
+
+          if (data.synonyms && Array.isArray(data.synonyms)) {
+            data.synonyms.forEach((syn) => {
+              const normalizedSyn = normalizeArticle(syn);
+              const synKey = `${brandKey}__${normalizedSyn}`;
+              productMasterDataCache.set(synKey, { ...data, _isSynonym: true });
+            });
+          }
         });
+
+        brandSynonymsCache = new Map();
+        brandsSnap.docs.forEach((doc) => {
+          const data = doc.data() || {};
+          const oldKey = normalizeBrandKey(data.old);
+          if (!oldKey) return;
+          brandSynonymsCache.set(oldKey, data.canonical);
+        });
+
+        cacheExpiry = Date.now() + 10 * 60 * 60 * 1000;
+        logger.info("Caches loaded", {
+          masterDataCount: masterDataSnap.size,
+          brandSynonymsCount: brandsSnap.size,
+        });
+      } catch (e) {
+        logger.error("Failed to load caches", { error: e.message });
+        throw e;
+      } finally {
+        loadAllCachesInFlight = null;
       }
-    });
-    
-    // Cache brand synonyms (keys normalized for case/space insensitivity)
-    brandSynonymsCache = new Map();
-    brandsSnap.docs.forEach(doc => {
-      const data = doc.data() || {};
-      const oldKey = normalizeBrandKey(data.old);
-      if (!oldKey) return;
-      brandSynonymsCache.set(oldKey, data.canonical);
-    });
-    
-    cacheExpiry = Date.now() + 10 * 60 * 60 * 1000; // 10 годин (актуальний протягом робочого дня 09-17)
-    logger.info("Caches loaded", { 
-      masterDataCount: masterDataSnap.size, 
-      brandSynonymsCount: brandsSnap.size 
-    });
-  } catch (e) {
-    logger.error("Failed to load caches", { error: e.message });
-    throw e;
+    })();
+
+    await loadAllCachesInFlight;
   }
 }
 
@@ -140,9 +135,8 @@ async function loadAllCaches() {
 async function getProductMasterData(brand, article) {
   await loadAllCaches();
   
-  // Нормалізуємо артикул для пошуку
   const normalizedArticle = normalizeArticle(article);
-  const key = `${brand}__${normalizedArticle}`;
+  const key = `${normalizeBrandKey(brand)}__${normalizedArticle}`;
   
   // Спочатку шукаємо по основному артикулу
   const directData = productMasterDataCache.get(key);
@@ -214,7 +208,7 @@ const isAdminReq = (req) => {
 };
 
 
-async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, categories, pack, tolerances, needsReview, synonyms, ukrSkladId, ukrSkladGroupId, minStock, lastSupplier, prices }) {
+async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, categories, pack, tolerances, synonyms, ukrSkladId, ukrSkladGroupId, minStock, lastSupplier, prices }) {
   supplier = normalizeSupplier(supplier);
   brand = await normalizeBrand(brand);
   const article = normalizeArticle(id);
@@ -253,7 +247,6 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, c
     if (categories !== undefined) productData.categories = categories;
     if (pack !== undefined) productData.pack = pack;
     if (tolerances !== undefined) productData.tolerances = tolerances;
-    if (needsReview !== undefined) productData.needsReview = needsReview;
     if (synonyms !== undefined) productData.synonyms = Array.isArray(synonyms) ? synonyms : [];
     // Зберігаємо останнього постачальника з UkrSklad CSV (тільки якщо передано і не порожнє)
     if (lastSupplier !== undefined && lastSupplier && String(lastSupplier).trim()) {
@@ -391,6 +384,7 @@ module.exports = {
   round2,
   normalizeArticle,
   normalizeBrand,
+  normalizeBrandKey,
   normalizeSupplier,
   sanitizeDocId,
   isAdminReq,

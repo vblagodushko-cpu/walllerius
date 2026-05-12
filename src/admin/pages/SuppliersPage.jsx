@@ -706,6 +706,7 @@ export default function SuppliersPage({ setStatus }) {
   const [items, setItems] = useState([]);
   const [editing, setEditing] = useState(null);
   const [updatingUrls, setUpdatingUrls] = useState(new Set()); // Set of supplier IDs being updated
+  const [syncingUkrSklad, setSyncingUkrSklad] = useState(false);
 
   // XLSX mapping modal state
   const [mapModal, setMapModal] = useState(null); // { supplier, headers, rows }
@@ -751,6 +752,33 @@ export default function SuppliersPage({ setStatus }) {
 
 
   useEffect(() => { load(); }, []);
+
+  const handleUkrSkladSync = async () => {
+    if (syncingUkrSklad) return;
+
+    setSyncingUkrSklad(true);
+    setStatus?.({
+      type: "info",
+      message: "Запущено ручне оновлення залишків UkrSklad. Це може зайняти кілька хвилин.",
+    });
+
+    try {
+      const call = httpsCallable(functions, "triggerUkrSkladSync");
+      const { data } = await call({ force: true });
+      setStatus?.({
+        type: "success",
+        message: data?.message || "Залишки UkrSklad оновлено.",
+      });
+    } catch (e) {
+      console.error("Помилка ручного оновлення UkrSklad", e);
+      setStatus?.({
+        type: "error",
+        message: e?.message || "Не вдалося оновити залишки UkrSklad",
+      });
+    } finally {
+      setSyncingUkrSklad(false);
+    }
+  };
 
   const removeSupplier = async (s) => {
     if (!confirm(`Видалити постачальника "${s.name}" і ВСІ його товари?`)) return;
@@ -1182,7 +1210,18 @@ export default function SuppliersPage({ setStatus }) {
 
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <h2 className="text-2xl font-semibold">Постачальники</h2>
-        <button className={primary} onClick={()=>setEditing({})}>Додати постачальника</button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={handleUkrSkladSync}
+            disabled={syncingUkrSklad}
+            title="Примусово оновити price_full.csv з UkrSklad незалежно від cron"
+          >
+            {syncingUkrSklad ? "Оновлення UkrSklad..." : "Оновити залишки UkrSklad"}
+          </button>
+          <button className={primary} onClick={()=>setEditing({})}>Додати постачальника</button>
+        </div>
       </div>
 
       {items.length === 0 ? (

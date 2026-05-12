@@ -561,6 +561,44 @@ function BrandTools({ setStatus }) {
 function ImportProductMasterData({ setStatus }) {
   const [count, setCount] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
+
+  const exportAllMasterData = async () => {
+    if (!window.XLSX) {
+      setStatus?.({ type: "error", message: "Потрібна бібліотека XLSX" });
+      return;
+    }
+    setExportingAll(true);
+    try {
+      const snap = await getDocs(collection(db, `/artifacts/${appId}/public/data/productMasterData`));
+      if (snap.empty) {
+        setStatus?.({ type: "success", message: "Майстер-дані порожні" });
+        return;
+      }
+      const data = snap.docs.map(d => {
+        const r = d.data();
+        return {
+          "Бренд": r.brand ?? "",
+          "Артикул": r.id ?? "",
+          "Правильна назва": r.correctName ?? "",
+          "Категорії": Array.isArray(r.categories) ? r.categories.join(", ") : (r.categories ?? ""),
+          "Фасування": r.pack ?? "",
+          "Допуски": r.tolerances ?? "",
+          "Синоніми артикулів": Array.isArray(r.synonyms) ? r.synonyms.join(", ") : (r.synonyms ?? ""),
+        };
+      });
+
+      const ws = window.XLSX.utils.json_to_sheet(data);
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, "Майстер-дані");
+      window.XLSX.writeFile(wb, `master-data-${Date.now()}.xlsx`);
+      setStatus?.({ type: "success", message: `Експортовано ${data.length} записів майстер-даних` });
+    } catch (e) {
+      setStatus?.({ type: "error", message: e?.message || "Помилка експорту" });
+    } finally {
+      setExportingAll(false);
+    }
+  };
 
   const exportProductsForReview = async () => {
     if (!window.XLSX) {
@@ -569,40 +607,61 @@ function ImportProductMasterData({ setStatus }) {
     }
     setExporting(true);
     try {
-      const q = query(
-        collection(db, `/artifacts/${appId}/public/data/products`),
-        where('needsReview', '==', true),
-        limit(1000)
-      );
-      
-      const snap = await getDocs(q);
-      const products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const call = httpsCallable(functions, "monitorProductMasterData");
+      const PAGE = 100;
+      const MAX_PAGES = 200;
+      let cursor = null;
+      const all = [];
+      let truncated = false;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const { data } = await call({
+          supplier: "Мій склад",
+          fields: ["masterExists"],
+          pageSize: PAGE,
+          cursor,
+        });
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        all.push(...rows);
+        if (rows.length === 0) break;
+        if (!data?.hasMore) break;
+        cursor = data.nextCursor != null ? data.nextCursor : null;
+        if (cursor == null) break;
+        if (page === MAX_PAGES - 1 && data.hasMore) truncated = true;
+      }
 
-      if (products.length === 0) {
-        setStatus?.({ type: "success", message: "✅ Всі товари мають повну інформацію в майстер-даних" });
-        setExporting(false);
+      if (all.length === 0) {
+        setStatus?.({
+          type: "success",
+          message: "✅ Для «Мій склад» не знайдено позицій без master-картки (за поточним сканом).",
+        });
         return;
       }
 
-      const data = products.map(p => ({
-        "Бренд": p.brand,
-        "Артикул": p.id,
-        "Назва (тимчасова)": p.name,
-        "Постачальник": p.supplier,
-        "Залишок": p.stock,
+      const dataRows = all.map((row) => ({
+        "Бренд": row.brand,
+        "Артикул": row.id,
+        "Назва (з каталогу)": row.name,
+        "Постачальник": row.supplier ?? "Мій склад",
+        "Залишок": row.stock,
+        "Бракує": (row.missingFields || []).join(", "),
         "Синоніми артикулів": "",
         "Правильна назва": "",
         "Допуски": "",
         "Категорії": "",
-        "Фасування": ""
+        "Фасування": "",
       }));
 
-      const ws = window.XLSX.utils.json_to_sheet(data);
+      const ws = window.XLSX.utils.json_to_sheet(dataRows);
       const wb = window.XLSX.utils.book_new();
-      window.XLSX.utils.book_append_sheet(wb, ws, "Товари для перевірки");
-      window.XLSX.writeFile(wb, `products-for-review-${Date.now()}.xlsx`);
-      
-      setStatus?.({ type: "success", message: `Експортовано ${products.length} товарів для перевірки` });
+      window.XLSX.utils.book_append_sheet(wb, ws, "Без master-картки");
+      window.XLSX.writeFile(wb, `products-no-master-${Date.now()}.xlsx`);
+
+      setStatus?.({
+        type: "success",
+        message:
+          `Експортовано ${dataRows.length} позицій постачальника «Мій склад» без запису в productMasterData` +
+          (truncated ? " (можливе обмеження сторінок експорту — уточни в Товари › Майстер-дані)." : "."),
+      });
     } catch (e) {
       setStatus?.({ type: "error", message: e?.message || "Помилка експорту" });
     } finally {
@@ -610,114 +669,116 @@ function ImportProductMasterData({ setStatus }) {
     }
   };
 
+  const parseMasterXlsx = (file) => new Promise((resolve, reject) => {
+    needXLSX();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = window.XLSX.read(e.target.result, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        if (!rows.length) throw new Error("Файл порожній");
+
+        const headers = rows[0].map(h => String(h||"").trim().toLowerCase());
+        const body = rows.slice(1);
+        const pick = (...aliases) => headers.findIndex(h => aliases.some(a => h.includes(a)));
+
+        const iBrand = pick("бренд","brand","виробник");
+        const iId    = pick("артикул","код","sku","id");
+        if (iBrand < 0 || iId < 0) throw new Error("Потрібні колонки: Бренд, Артикул");
+
+        const iName = pick("правил","назва","correct","name");
+        const iCats = pick("категор","category","categories");
+        const iPack = pick("фасув","pack","packaging");
+        const iTol  = pick("допуск","toler","approvals","approval");
+        const iSyn  = pick("синонім","synonym");
+
+        const recs = body.map(r => {
+          const brand = String(r[iBrand]||"").trim();
+          const id = normId(r[iId]);
+          if (!brand || !id) return null;
+          const correctName = iName>=0 ? String(r[iName]||"").trim() : "";
+          const categories = iCats>=0 ? String(r[iCats]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
+          const pack = iPack>=0 ? String(r[iPack]||"").trim() : "";
+          const tolerances = iTol>=0 ? String(r[iTol]||"").trim() : "";
+          const synonyms = iSyn>=0 ? String(r[iSyn]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
+          return { brand, id, correctName, categories, pack, tolerances, synonyms };
+        }).filter(Boolean);
+
+        resolve(recs);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error("Помилка читання файлу"));
+    reader.readAsBinaryString(file);
+  });
+
+  const clearMasterCache = async () => {
+    try {
+      const clearCache = httpsCallable(functions, "clearMasterDataCache");
+      await clearCache();
+    } catch (cacheErr) {
+      console.warn("Failed to clear master data cache:", cacheErr);
+    }
+  };
+
+  // Строгий синк: оновлює подані + видаляє відсутні
   const onFile = (ev) => {
     const f = ev.target.files?.[0];
     ev.target.value = "";
     if (!f) return;
-    try {
-      needXLSX();
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const wb = window.XLSX.read(e.target.result, { type: "binary" });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-          if (!rows.length) throw new Error("Файл порожній");
+    (async () => {
+      try {
+        const recs = await parseMasterXlsx(f);
 
-          const headers = rows[0].map(h => String(h||"").trim().toLowerCase());
-          const body = rows.slice(1);
+        const seenDocIds = new Set(recs.map(r => `${r.brand}__${r.id}`));
+        await batchedSet(`/artifacts/${appId}/public/data/productMasterData`, recs, (r) => `${r.brand}__${r.id}`);
 
-          const pick = (...aliases) => headers.findIndex(h => aliases.some(a => h.includes(a)));
-
-          const iBrand = pick("бренд","brand","виробник");
-          const iId    = pick("артикул","код","sku","id");
-          if (iBrand < 0 || iId < 0) throw new Error("Потрібні колонки: Бренд, Артикул");
-
-          const iName  = pick("правил","назва","correct","name");
-          const iCats  = pick("категор","category","categories");
-          const iPack  = pick("фасув","pack","packaging");
-          const iTol   = pick("допуск","toler","approvals","approval");
-          const iSyn   = pick("синонім","synonym");
-
-          // Збираємо seenDocIds для strict cleanup (видалення товарів, яких немає в файлі)
-          const seenDocIds = new Set();
-          const recs = body.map(r => {
-            const brand = String(r[iBrand]||"").trim();
-            const id = normId(r[iId]);
-            if (!brand || !id) return null;
-            // Формуємо docId так само як в batchedSet (brand__id)
-            const docId = `${brand}__${id}`;
-            seenDocIds.add(docId);
-            const correctName = iName>=0 ? String(r[iName]||"").trim() : "";
-            const categories = iCats>=0 ? String(r[iCats]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
-            const pack = iPack>=0 ? String(r[iPack]||"").trim() : "";
-            const tolerances = iTol>=0 ? String(r[iTol]||"").trim() : "";
-            const synonyms = iSyn>=0 ? String(r[iSyn]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
-            return { brand, id, correctName, categories, pack, tolerances, synonyms };
-          }).filter(Boolean);
-
-          // Зберігаємо записи з файлу
-          await batchedSet(`/artifacts/${appId}/public/data/productMasterData`, recs, (r) => `${r.brand}__${r.id}`);
-          
-          // Cleanup: видаляємо майстер-дані, яких немає в файлі (strict sync)
-          let deletedCount = 0;
-          if (seenDocIds.size > 0) {
-            const masterDataCol = collection(db, `/artifacts/${appId}/public/data/productMasterData`);
-            // Читаємо всі документи майстер-даних (зазвичай їх не дуже багато)
-            const snap = await getDocs(masterDataCol);
-            
-            if (snap.size > 0) {
-              const BATCH_LIMIT = 500;
-              let batch = writeBatch(db);
-              let ops = 0;
-              
-              for (const d of snap.docs) {
-                const docId = d.id; // docId = brand__id
-                if (!seenDocIds.has(docId)) {
-                  batch.delete(d.ref);
-                  ops++;
-                  deletedCount++;
-                  
-                  // Firestore обмежує batch до 500 операцій
-                  if (ops >= BATCH_LIMIT) {
-                    await batch.commit();
-                    batch = writeBatch(db); // Створюємо новий batch
-                    ops = 0;
-                  }
-                }
-              }
-              
-              // Комітимо останній batch, якщо є операції
-              if (ops > 0) {
-                await batch.commit();
+        let deletedCount = 0;
+        if (seenDocIds.size > 0) {
+          const masterDataCol = collection(db, `/artifacts/${appId}/public/data/productMasterData`);
+          const snap = await getDocs(masterDataCol);
+          if (snap.size > 0) {
+            const BATCH_LIMIT = 500;
+            let batch = writeBatch(db);
+            let ops = 0;
+            for (const d of snap.docs) {
+              if (!seenDocIds.has(d.id)) {
+                batch.delete(d.ref);
+                ops++;
+                deletedCount++;
+                if (ops >= BATCH_LIMIT) { await batch.commit(); batch = writeBatch(db); ops = 0; }
               }
             }
+            if (ops > 0) await batch.commit();
           }
-
-          setCount(recs.length);
-          const message = deletedCount > 0 
-            ? `Імпортовано: ${recs.length}, видалено: ${deletedCount}`
-            : `Імпортовано: ${recs.length}`;
-          
-          // Автоматично очищаємо кеш майстер-даних після імпорту
-          try {
-            const clearCache = httpsCallable(functions, "clearMasterDataCache");
-            await clearCache();
-            console.log("Master data cache cleared after import");
-          } catch (cacheErr) {
-            console.warn("Failed to clear master data cache:", cacheErr);
-            // Не блокуємо успішний імпорт, якщо очищення кешу не вдалося
-          }
-          
-          setStatus?.({ type:"success", message });
-        } catch (e2) {
-          setStatus?.({ type:"error", message: e2?.message || "Помилка обробки файлу" });
         }
-      };
-      reader.readAsBinaryString(f);
-    } catch (e) {
-      setStatus?.({ type:"error", message: e?.message || "Помилка читання файлу" });
-    }
+
+        setCount(recs.length);
+        await clearMasterCache();
+        setStatus?.({ type: "success", message: deletedCount > 0 ? `Імпортовано: ${recs.length}, видалено: ${deletedCount}` : `Імпортовано: ${recs.length}` });
+      } catch (e) {
+        setStatus?.({ type: "error", message: e?.message || "Помилка обробки файлу" });
+      }
+    })();
+  };
+
+  // Часткове оновлення: оновлює тільки подані, нічого не видаляє
+  const onFilePartial = (ev) => {
+    const f = ev.target.files?.[0];
+    ev.target.value = "";
+    if (!f) return;
+    (async () => {
+      try {
+        const recs = await parseMasterXlsx(f);
+        await batchedSet(`/artifacts/${appId}/public/data/productMasterData`, recs, (r) => `${r.brand}__${r.id}`);
+        await clearMasterCache();
+        setStatus?.({ type: "success", message: `Часткове оновлення: оновлено ${recs.length} товарів` });
+      } catch (e) {
+        setStatus?.({ type: "error", message: e?.message || "Помилка обробки файлу" });
+      }
+    })();
   };
 
   return (
@@ -725,14 +786,25 @@ function ImportProductMasterData({ setStatus }) {
       <div className="flex gap-2">
         <button
           className={`${secondary} disabled:opacity-60`}
+          disabled={exportingAll}
+          onClick={exportAllMasterData}
+        >
+          {exportingAll ? "Експорт..." : "Експортувати майстер-дані"}
+        </button>
+        <button
+          className={`${secondary} disabled:opacity-60`}
           disabled={exporting}
           onClick={exportProductsForReview}
         >
-          {exporting ? "Експорт..." : "Експортувати товари для перевірки"}
+          {exporting ? "Експорт..." : "Експорт без master (Мій склад)"}
         </button>
-      <label className={secondary}>
+      <label className={`${secondary} cursor-pointer`}>
         Обрати XLSX
         <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFile} />
+      </label>
+      <label className={`${primary} cursor-pointer`}>
+        Часткове оновлення
+        <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFilePartial} />
       </label>
       </div>
     }>
@@ -784,10 +856,9 @@ function ImportProductMasterData({ setStatus }) {
               <li>Використовується <b>правильна назва</b> замість назви з прайсу</li>
               <li>Підставляються <b>категорії</b>, <b>фасування</b>, <b>допуски</b></li>
               <li>Додаються <b>синоніми артикулів</b> (для пошуку)</li>
-              <li>Товар позначається як <b>needsReview: false</b></li>
             </ul>
             <p className="ml-4">
-              Якщо майстер-даних немає — товар зберігається з тимчасовою назвою з прайсу і позначається <b>needsReview: true</b>.
+              Якщо майстер-даних немає — товар зберігається з тимчасовою назвою з прайсу; детальну перевірку зручно робити в розділі <b>Товари › Майстер-дані</b> (моніторинг полів).
             </p>
             <p>
               <b>4. Синоніми артикулів:</b> Якщо в майстер-даних вказані синоніми (напр. <code className="bg-slate-100 px-1 rounded">ABC-123, ABC123, ABC_123</code>), вони зберігаються в документі товару. Пошук по артикулу знайде товар за будь-яким синонімом.
@@ -800,9 +871,9 @@ function ImportProductMasterData({ setStatus }) {
 
         {/* Експорт товарів для перевірки */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-          <h4 className="text-sm font-semibold text-blue-800 mb-2">📤 Експорт товарів для перевірки</h4>
+          <h4 className="text-sm font-semibold text-blue-800 mb-2">📤 Експорт позицій без master-картки</h4>
           <p className="text-xs text-blue-700 mb-2">
-            Кнопка "Експортувати товари для перевірки" завантажує товари з <b>needsReview: true</b> (тобто без майстер-даних) у Excel файл. Це допомагає:
+            Кнопка «Експорт без master (Мій склад)» викликає той самий механізм, що й моніторинг у <b>Товари › Майстер-дані</b>: постачальник <b>Мій склад</b>, перевірка на відсутність запису в <code className="bg-blue-100 px-1 rounded">productMasterData</code>. Результат — Excel для подальшого заповнення і імпорту майстер-даних.
           </p>
           <ul className="text-xs text-blue-700 list-disc list-inside space-y-1">
             <li>Знайти товари, які потребують додавання майстер-даних</li>
@@ -818,7 +889,7 @@ function ImportProductMasterData({ setStatus }) {
           <div className="text-xs text-slate-600 space-y-1">
             <p><b>Імпорт:</b> Reads = N (кількість документів у майстер-даних для cleanup) + M (записів у файлі для збереження). Writes = M (оновлення/додавання) + D (видалення).</p>
             <p><b>Використання:</b> Кеш завантажується один раз на 5 хвилин, потім використовується з пам'яті (0 reads).</p>
-            <p><b>Експорт:</b> Reads = M (товари з needsReview: true, limit 1000).</p>
+            <p><b>Експорт (без master):</b> виклики <code className="bg-slate-100 px-1 rounded">monitorProductMasterData</code> (по сторінках, до ~20 000 рядків).</p>
           </div>
         </div>
       </div>

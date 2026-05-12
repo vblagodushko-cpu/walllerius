@@ -254,7 +254,6 @@ async function processAndSaveProducts(rows, supplier) {
           pack: masterData.pack || null,
           tolerances: masterData.tolerances || null,
           synonyms: masterData.synonyms || [],
-          needsReview: false,
         });
 
         // Якщо артикул у CSV є синонімом канонічного (productId !== article):
@@ -288,7 +287,6 @@ async function processAndSaveProducts(rows, supplier) {
           categories: null,
           pack: null,
           tolerances: null,
-          needsReview: true,
       });
       }
       ok++;

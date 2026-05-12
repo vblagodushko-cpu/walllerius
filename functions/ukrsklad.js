@@ -5,7 +5,7 @@ const logger = require("firebase-functions/logger");
 const { google } = require("googleapis");
 const iconv = require("iconv-lite");
 const Papa = require("papaparse");
-const { normalizeBrand, normalizeArticle, getProductMasterData, upsertProduct, removeProduct, db, FieldValue } = require("./shared");
+const { normalizeBrand, normalizeBrandKey, normalizeArticle, getProductMasterData, upsertProduct, removeProduct, db, FieldValue } = require("./shared");
 
 const APP_ID = process.env.APP_ID || "embryo-project";
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -30,6 +30,70 @@ const isEqual = (a, b) => {
     return false;
   }
 };
+
+/** Підтягнути майстер-дані для товарів «Мій склад» з порожніми категоріями в каталозі (коли master-картка вже є). */
+async function enrichMiySkladProductsFromMaster({
+  db,
+  getProductMasterData,
+  upsertProduct,
+  supplierNorm,
+  publicProductsCol,
+  supplierProductsCol,
+}) {
+  let enriched = 0;
+  try {
+    const linkSnap = await supplierProductsCol.where("supplier", "==", supplierNorm).get();
+    const docIds = [...new Set(linkSnap.docs.map((d) => d.data().productDocId).filter(Boolean))];
+    const CHUNK = 30;
+    const CONCURRENCY = 12;
+
+    const tryEnrichOne = async (snap) => {
+      if (!snap.exists) return false;
+      const p = snap.data();
+      const cats = p.categories;
+      const noCategories = cats == null || (Array.isArray(cats) && cats.length === 0);
+      if (!noCategories) return false;
+      const masterData = await getProductMasterData(p.brand, p.id);
+      if (!masterData) return false;
+      const offer = (p.offers || []).find((o) => o.supplier === supplierNorm);
+      if (!offer) return false;
+      await upsertProduct({
+        supplier: supplierNorm,
+        brand: p.brand,
+        id: p.id,
+        name: masterData.correctName || p.name,
+        stock: offer.stock,
+        publicPrices: offer.publicPrices || {},
+        categories: masterData.categories ?? null,
+        pack: masterData.pack ?? null,
+        tolerances: masterData.tolerances ?? null,
+        synonyms: Array.isArray(masterData.synonyms) ? masterData.synonyms : [],
+        ukrSkladId: p.ukrSkladId,
+        ukrSkladGroupId: p.ukrSkladGroupId,
+        minStock: p.minStock,
+        lastSupplier: p.lastSupplier,
+      });
+      enriched++;
+      return true;
+    };
+
+    for (let i = 0; i < docIds.length; i += CHUNK) {
+      const chunk = docIds.slice(i, i + CHUNK);
+      const refs = chunk.map((id) => publicProductsCol.doc(id));
+      const snaps = await db.getAll(...refs);
+
+      for (let j = 0; j < snaps.length; j += CONCURRENCY) {
+        const part = snaps.slice(j, j + CONCURRENCY);
+        await Promise.allSettled(part.map((s) => tryEnrichOne(s)));
+      }
+    }
+
+    logger.info("enrichMiySkladProductsFromMaster finished", { enriched, totalLinks: docIds.length });
+  } catch (e) {
+    logger.error("enrichMiySkladProductsFromMaster failed", { error: e.message, stack: e.stack });
+    throw e;
+  }
+}
 
 // --------- core sync logic ----------
 async function performUkrSkladSync(forceSync = false) {
@@ -102,7 +166,7 @@ async function performUkrSkladSync(forceSync = false) {
         normalizedProductKeys.add(productKey);
         
         // Збираємо унікальні ключі для masterData
-        uniqueMasterDataKeys.add(`${normalizedBrand}__${normalizedArticle}`);
+        uniqueMasterDataKeys.add(`${normalizeBrandKey(normalizedBrand)}__${normalizedArticle}`);
         
         rowsToProcess.push({ 
           row, 
@@ -117,8 +181,11 @@ async function performUkrSkladSync(forceSync = false) {
       // 5) Батч-завантаження masterData для унікальних ключів
       const masterDataMap = new Map();
       for (const key of uniqueMasterDataKeys) {
-        const [brand, article] = key.split('__');
-        const masterData = await getProductMasterData(brand, article);
+        const sep = key.lastIndexOf("__");
+        if (sep <= 0) continue;
+        const brandForLookup = key.slice(0, sep);
+        const articlePart = key.slice(sep + 2);
+        const masterData = await getProductMasterData(brandForLookup, articlePart);
         if (masterData) {
           masterDataMap.set(key, masterData);
         }
@@ -177,7 +244,7 @@ async function performUkrSkladSync(forceSync = false) {
         };
 
           // Отримуємо masterData з кешу
-          const masterDataKey = `${normalizedBrand}__${normalizedArticle}`;
+          const masterDataKey = `${normalizeBrandKey(normalizedBrand)}__${normalizedArticle}`;
           const masterData = masterDataMap.get(masterDataKey);
           
           // Канонічні значення (якщо masterData знайдені по синоніму)
@@ -219,7 +286,6 @@ async function performUkrSkladSync(forceSync = false) {
             pack: masterData?.pack || pack,
             tolerances: masterData?.tolerances || null,
             synonyms: masterData?.synonyms || [],
-            needsReview: !masterData,
             ukrSkladId: str(row["id"] || row["ID"] || ""),
             ukrSkladGroupId: str(row["group_id"]),
             minStock: num(row["minimum"]),
@@ -296,7 +362,6 @@ async function performUkrSkladSync(forceSync = false) {
               pack: op.pack,
               tolerances: op.tolerances,
               synonyms: op.synonyms,
-              needsReview: op.needsReview,
               ukrSkladId: op.ukrSkladId,
               ukrSkladGroupId: op.ukrSkladGroupId,
               minStock: op.minStock,
@@ -311,6 +376,15 @@ async function performUkrSkladSync(forceSync = false) {
         
         await Promise.allSettled(promises);
       }
+
+      await enrichMiySkladProductsFromMaster({
+        db,
+        getProductMasterData,
+        upsertProduct,
+        supplierNorm,
+        publicProductsCol,
+        supplierProductsCol,
+      });
 
       // 9) Батч-видалення з обмеженням concurrency
       for (let i = 0; i < operationsToRemove.length; i += CONCURRENCY_LIMIT) {
@@ -479,7 +553,9 @@ exports.ukrSkladSync = onSchedule(
 exports.triggerUkrSkladSync = onCall({ 
   region: REGION, 
   cors: true,
-  timeoutSeconds: 3600  // 60 хвилин (максимум для callable)
+  timeoutSeconds: 3600,  // 60 хвилин (максимум для callable)
+  memory: "512MiB",
+  maxInstances: 1
 }, async (request) => {
   // Перевірка прав адміна
   if (!request.auth?.token?.admin) {
