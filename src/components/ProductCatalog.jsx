@@ -1,5 +1,86 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../firebase-config';
 import Tooltip from './Tooltip.jsx';
+
+const MAX_DETAIL_BODY_CHARS = 80000;
+
+/** Безпечне відображення: без HTML/Markdown-рендеру (тільки текст + переноси рядків). */
+function ProductDetailModal({ product, body, imageUrl, loading, error, onClose }) {
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  if (!product) return null;
+  return (
+    <>
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
+        <div className="p-4 border-b flex justify-between items-start gap-2">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Деталі товару</h3>
+            <p className="text-sm text-gray-600 mt-1 break-words">{product.name || 'Без назви'}</p>
+            <p className="text-xs text-gray-500 mt-1">
+              {product.brand} · {product.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-sm shrink-0"
+          >
+            Закрити
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto flex-1 min-h-0">
+          {loading && <p className="text-gray-500 text-sm">Завантаження...</p>}
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          {!loading && !error && (
+            <>
+              {imageUrl ? (
+                <button
+                  type="button"
+                  onClick={() => setLightboxOpen(true)}
+                  className="mb-4 block w-full rounded-lg border bg-gray-50 overflow-hidden focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  title="Збільшити фото"
+                >
+                  <img
+                    src={imageUrl}
+                    alt=""
+                    className="w-full max-h-56 object-contain mx-auto"
+                    loading="lazy"
+                  />
+                </button>
+              ) : null}
+              <pre className="whitespace-pre-wrap text-sm text-gray-800 font-sans leading-relaxed">
+                {body?.trim() ? body : 'Детальний опис ще не додано.'}
+              </pre>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+    {lightboxOpen && imageUrl && (
+      <div
+        className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4"
+        onClick={() => setLightboxOpen(false)}
+        role="presentation"
+      >
+        <button
+          type="button"
+          className="absolute top-4 right-4 text-white text-sm px-3 py-1 rounded bg-white/20"
+          onClick={() => setLightboxOpen(false)}
+        >
+          Закрити
+        </button>
+        <img
+          src={imageUrl}
+          alt=""
+          className="max-w-full max-h-[90vh] object-contain"
+          onClick={(e) => e.stopPropagation()}
+        />
+      </div>
+    )}
+    </>
+  );
+}
 
 const AddToCartModal = ({ product, onAddToCart, onClose }) => {
   const [quantity, setQuantity] = useState(1);
@@ -58,8 +139,69 @@ const AddToCartModal = ({ product, onAddToCart, onClose }) => {
   );
 };
 
-const ProductCatalog = ({ products, client, onAddToCart, suppliers, showOnlyInStock = false, showOnlyPartners = false, selectedCategory = null, clientPricingRules = null, selectedCurrency = 'EUR', uahRate = null, featuredProducts = [], showFeatured = false, isArticleSearchActive = false }) => {
+const ProductCatalog = ({
+  appId,
+  products,
+  client,
+  onAddToCart,
+  suppliers,
+  showOnlyInStock = false,
+  showOnlyPartners = false,
+  selectedCategory = null,
+  clientPricingRules = null,
+  selectedCurrency = 'EUR',
+  uahRate = null,
+  featuredProducts = [],
+  showFeatured = false,
+  isArticleSearchActive = false,
+}) => {
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [detailModal, setDetailModal] = useState(null);
+  const [detailBody, setDetailBody] = useState('');
+  const [detailImageUrl, setDetailImageUrl] = useState('');
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+
+  const openProductDetail = useCallback(
+    async (productRow) => {
+      if (!appId || !productRow?.docId) return;
+      setDetailModal({
+        docId: productRow.docId,
+        brand: productRow.brand,
+        id: productRow.id,
+        name: productRow.name,
+      });
+      setDetailBody('');
+      setDetailImageUrl('');
+      setDetailError('');
+      setDetailLoading(true);
+      try {
+        const ref = doc(
+          db,
+          `/artifacts/${appId}/public/data/products/${productRow.docId}/details/main`
+        );
+        const snap = await getDoc(ref);
+        const d = snap.exists() ? snap.data() || {} : {};
+        const raw = String(d.body ?? '');
+        setDetailBody(raw.length > MAX_DETAIL_BODY_CHARS ? raw.slice(0, MAX_DETAIL_BODY_CHARS) : raw);
+        setDetailImageUrl(String(d.imageUrl || d.imageThumbUrl || ''));
+      } catch (e) {
+        console.error('Product detail load', e);
+        setDetailError(e?.message || 'Не вдалося завантажити опис');
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [appId]
+  );
+
+  const closeProductDetail = useCallback(() => {
+    setDetailModal(null);
+    setDetailBody('');
+    setDetailImageUrl('');
+    setDetailError('');
+    setDetailLoading(false);
+  }, []);
   
   // Функція для відкриття пошуку в Google
   const openGoogleSearch = (productName, productId) => {
@@ -379,9 +521,27 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, showOnlyInSt
     return groups;
   }, [displayRows]);
 
+  const infoButtonClass =
+    'flex-shrink-0 p-1 rounded text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors';
+  const InfoIcon = () => (
+    <span className="text-xs font-semibold leading-none px-1" aria-hidden>
+      i
+    </span>
+  );
+
   return (
     <>
       {selectedProduct && <AddToCartModal product={selectedProduct} onAddToCart={(q)=>{ onAddToCart(selectedProduct, calculatePrice(selectedProduct, selectedProduct.selectedOffer), q); setSelectedProduct(null); }} onClose={()=>setSelectedProduct(null)} />}
+      {detailModal && (
+        <ProductDetailModal
+          product={detailModal}
+          body={detailBody}
+          imageUrl={detailImageUrl}
+          loading={detailLoading}
+          error={detailError}
+          onClose={closeProductDetail}
+        />
+      )}
       <div className="bg-white p-6 rounded-lg shadow-md">
         {/* Мобільний вигляд: картки, акцент на назві та ціні */}
         <div className="flex flex-col gap-3 sm:hidden">
@@ -425,6 +585,17 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, showOnlyInSt
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                       </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openProductDetail(row);
+                      }}
+                      className={infoButtonClass}
+                      title="Детальний опис"
+                    >
+                      <InfoIcon />
                     </button>
                   </div>
                   <div className="text-xs text-gray-500/80 leading-snug truncate">
@@ -539,6 +710,17 @@ const ProductCatalog = ({ products, client, onAddToCart, suppliers, showOnlyInSt
                               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                               </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openProductDetail(group.product);
+                              }}
+                              className={infoButtonClass}
+                              title="Детальний опис"
+                            >
+                              <InfoIcon />
                             </button>
                           </div>
                         </td>

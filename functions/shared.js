@@ -92,16 +92,17 @@ async function loadAllCaches() {
         productMasterDataCache = new Map();
         masterDataSnap.docs.forEach((doc) => {
           const data = doc.data();
+          const row = { ...data, _masterFirestoreId: doc.id };
           const normalizedId = normalizeArticle(data.id || "");
           const brandKey = normalizeBrandKey(data.brand || "");
           const key = `${brandKey}__${normalizedId}`;
-          productMasterDataCache.set(key, data);
+          productMasterDataCache.set(key, row);
 
           if (data.synonyms && Array.isArray(data.synonyms)) {
             data.synonyms.forEach((syn) => {
               const normalizedSyn = normalizeArticle(syn);
               const synKey = `${brandKey}__${normalizedSyn}`;
-              productMasterDataCache.set(synKey, { ...data, _isSynonym: true });
+              productMasterDataCache.set(synKey, { ...row, _isSynonym: true });
             });
           }
         });
@@ -131,29 +132,57 @@ async function loadAllCaches() {
   }
 }
 
+/** Прибирає службові поля кешу перед поверненням у синки / API. */
+function stripMasterCacheInternalFields(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  const { _masterFirestoreId, _isSynonym, ...rest } = obj;
+  return rest;
+}
+
 // Updated function to get product master data with caching
 async function getProductMasterData(brand, article) {
   await loadAllCaches();
-  
+
   const normalizedArticle = normalizeArticle(article);
   const key = `${normalizeBrandKey(brand)}__${normalizedArticle}`;
-  
-  // Спочатку шукаємо по основному артикулу
+
   const directData = productMasterDataCache.get(key);
   if (directData && !directData._isSynonym) {
-    return directData;
+    return stripMasterCacheInternalFields(directData);
   }
-  
-  // Якщо не знайдено - шукаємо по синонімах (вони також нормалізовані в кеші)
+
   if (directData && directData._isSynonym) {
-    // Знайдено по синоніму - логуємо для моніторингу
     logger.debug("Master data found via synonym", { brand, article, normalizedArticle });
-    // Повертаємо дані, прибравши прапорець _isSynonym для консистентності
     const { _isSynonym, ...cleanData } = directData;
-    return cleanData;
+    return stripMasterCacheInternalFields(cleanData);
   }
-  
+
   return null;
+}
+
+/**
+ * Фізичний id документа productMasterData (як у Firestore), після того самого резолву що getProductMasterData.
+ * Для update/delete — щоб не будувати docId з рядка бренду на картці товару.
+ */
+async function resolveProductMasterFirestoreId(brand, article) {
+  await loadAllCaches();
+  const normalizedArticle = normalizeArticle(article);
+  const key = `${normalizeBrandKey(brand)}__${normalizedArticle}`;
+  const directData = productMasterDataCache.get(key);
+  if (!directData) return null;
+  const firestoreId = directData._masterFirestoreId;
+  if (!firestoreId) return null;
+  if (directData._isSynonym) {
+    const { _isSynonym, ...rest } = directData;
+    return { firestoreId, row: stripMasterCacheInternalFields(rest) };
+  }
+  return { firestoreId, row: stripMasterCacheInternalFields(directData) };
+}
+
+/** Fallback doc id для нової картки (як раніше в updateProductMasterData). */
+function defaultProductMasterDocId(displayBrand, articleNorm) {
+  const b = str(displayBrand, 120).replace(/\s{2,}/g, " ").trim();
+  return `${b}__${articleNorm}`;
 }
 
 /**
@@ -391,6 +420,8 @@ module.exports = {
   upsertProduct,
   removeProduct,
   getProductMasterData,
+  resolveProductMasterFirestoreId,
+  defaultProductMasterDocId,
   findCanonicalArticleByAnyFormat,
   clearMasterDataCache,
   _getProductMasterDataCache: () => productMasterDataCache,

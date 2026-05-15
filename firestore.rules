@@ -77,6 +77,12 @@ service cloud.firestore {
         match /products/{docId} {
           allow read: if isAuthed();
           allow write: if isAdmin();
+
+          // Детальний опис товару (окремо від полів products, lazy read на порталі)
+          match /details/{detailId} {
+            allow read: if isAuthed();
+            allow write: if isAdmin();
+          }
         }
         match /suppliers/{docId} {
           allow read: if isAuthed();

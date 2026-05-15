@@ -215,7 +215,8 @@ exports.clearMasterDataCache = onCall({ region: REGION, cors: true }, async (req
 
 /**
  * updateProductMasterData - швидке редагування безпечних master-полів товару.
- * brand/id не змінюються, вони використовуються тільки як ключ існуючої картки.
+ * Шлях до документа productMasterData резолвиться як у getProductMasterData (реальний doc.id);
+ * для нової картки — defaultProductMasterDocId(бренд з картки товару, артикул).
  */
 exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (request) => {
   if (!request.auth?.token?.admin) {
@@ -233,7 +234,15 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     synonyms,
   } = request.data || {};
 
-  const { normalizeArticle, str: sharedStr, clearMasterDataCache } = require("./shared");
+  const {
+    normalizeArticle,
+    normalizeBrandKey,
+    str: sharedStr,
+    clearMasterDataCache,
+    resolveProductMasterFirestoreId,
+    defaultProductMasterDocId,
+    getProductMasterData,
+  } = require("./shared");
   const cleanProductDocId = sharedStr(productDocId, 200);
   const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
   const cleanId = normalizeArticle(id);
@@ -262,24 +271,37 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
   const safePack = sharedStr(pack, 200);
   const safeTolerances = sharedStr(tolerances, 500);
   const safeSynonyms = cleanList(synonyms, 100, 120).map(normalizeArticle).filter(Boolean);
-  const masterDocId = `${cleanBrand}__${cleanId}`;
 
   const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${cleanProductDocId}`);
-  const masterRef = db.doc(`/artifacts/${APP_ID}/public/data/productMasterData/${masterDocId}`);
-
   const productSnap = await productRef.get();
   if (!productSnap.exists) {
     throw new HttpsError("not-found", "Товар не знайдено.");
   }
 
   const product = productSnap.data() || {};
-  if (product.brand !== cleanBrand || normalizeArticle(product.id) !== cleanId) {
+  const productBrand = sharedStr(product.brand, 120).replace(/\s{2,}/g, " ").trim();
+  const productArticle = normalizeArticle(product.id);
+  if (
+    normalizeBrandKey(productBrand) !== normalizeBrandKey(cleanBrand) ||
+    productArticle !== cleanId
+  ) {
     throw new HttpsError("failed-precondition", "brand/id товару не збігаються з master-карткою.");
   }
 
+  const resolved = await resolveProductMasterFirestoreId(productBrand, product.id);
+  const existingMaster = resolved?.row ?? (await getProductMasterData(productBrand, product.id));
+  const masterDocId =
+    resolved?.firestoreId ?? defaultProductMasterDocId(productBrand, cleanId);
+  const masterRef = db.doc(`/artifacts/${APP_ID}/public/data/productMasterData/${masterDocId}`);
+
+  const docBrandField = existingMaster?.brand
+    ? sharedStr(existingMaster.brand, 120).replace(/\s{2,}/g, " ").trim()
+    : productBrand;
+  const docIdField = existingMaster?.id ? normalizeArticle(existingMaster.id) : cleanId;
+
   const masterPayload = {
-    brand: cleanBrand,
-    id: cleanId,
+    brand: docBrandField,
+    id: docIdField,
     correctName: safeCorrectName,
     categories: safeCategories,
     pack: safePack,
@@ -343,7 +365,14 @@ exports.deleteProductMasterData = onCall({ region: REGION, cors: true }, async (
   }
 
   const { productDocId, brand, id } = request.data || {};
-  const { normalizeArticle, str: sharedStr, clearMasterDataCache } = require("./shared");
+  const {
+    normalizeArticle,
+    normalizeBrandKey,
+    str: sharedStr,
+    clearMasterDataCache,
+    resolveProductMasterFirestoreId,
+    defaultProductMasterDocId,
+  } = require("./shared");
 
   const cleanProductDocId = sharedStr(productDocId, 200);
   const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
@@ -360,11 +389,18 @@ exports.deleteProductMasterData = onCall({ region: REGION, cors: true }, async (
   }
 
   const product = productSnap.data() || {};
-  if (product.brand !== cleanBrand || normalizeArticle(product.id) !== cleanId) {
+  const productBrand = sharedStr(product.brand, 120).replace(/\s{2,}/g, " ").trim();
+  const productArticle = normalizeArticle(product.id);
+  if (
+    normalizeBrandKey(productBrand) !== normalizeBrandKey(cleanBrand) ||
+    productArticle !== cleanId
+  ) {
     throw new HttpsError("failed-precondition", "brand/id товару не збігаються з master-карткою.");
   }
 
-  const masterDocId = `${cleanBrand}__${cleanId}`;
+  const resolved = await resolveProductMasterFirestoreId(productBrand, product.id);
+  const masterDocId =
+    resolved?.firestoreId ?? defaultProductMasterDocId(productBrand, cleanId);
   const masterRef = db.doc(`/artifacts/${APP_ID}/public/data/productMasterData/${masterDocId}`);
   const masterSnap = await masterRef.get();
   await masterRef.delete();

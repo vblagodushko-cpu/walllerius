@@ -8,9 +8,20 @@ import {
   limit,
   doc,
   getDoc,
+  setDoc,
   addDoc,
   serverTimestamp,
+  deleteField,
 } from "firebase/firestore";
+import {
+  uploadProductImages,
+  deleteProductImagesAtPaths,
+} from "../../utils/productImageStorage";
+import {
+  validateProductImageFile,
+  coerceProductImageFile,
+  getImageFileFromClipboard,
+} from "../../utils/productImage";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import Tabs from "../components/Tabs.jsx";
@@ -24,6 +35,8 @@ if (!appId) {
 const PRICE_TYPE_INCOMING = "вхідна";
 const INCOMING_FROM_RETAIL_COEF = 0.66667;
 const MASTER_MONITOR_PAGE_SIZE = 100;
+/** Макс. довжина поля body у products/.../details/main (байти Firestore ~1MB на документ). */
+const MAX_PRODUCT_DETAIL_BODY = 80000;
 const MASTER_FIELD_OPTIONS = [
   { key: "masterExists", label: "Master-картка існує" },
   { key: "correctName", label: "Правильна назва" },
@@ -158,6 +171,15 @@ export default function ProductsPage() {
   const [loadingMasterData, setLoadingMasterData] = useState(false);
   const [savingMasterData, setSavingMasterData] = useState(false);
   const [deletingMasterData, setDeletingMasterData] = useState(false);
+  /** Детальний опис для порталу (products/{docId}/details/main). */
+  const [detailBody, setDetailBody] = useState("");
+  const [detailImageUrl, setDetailImageUrl] = useState("");
+  const [detailImageThumbUrl, setDetailImageThumbUrl] = useState("");
+  const [detailImageStoragePath, setDetailImageStoragePath] = useState("");
+  const [detailImageThumbStoragePath, setDetailImageThumbStoragePath] = useState("");
+  const [pendingImagePreview, setPendingImagePreview] = useState("");
+  const [pendingImageFile, setPendingImageFile] = useState(null);
+  const [removeDetailImage, setRemoveDetailImage] = useState(false);
 
   // Моніторинг заповненості master-даних
   const [masterMonitorSupplier, setMasterMonitorSupplier] = useState("Мій склад");
@@ -411,9 +433,24 @@ export default function ProductsPage() {
     });
   }, []);
 
+  const clearDetailImageDraft = useCallback(() => {
+    setPendingImageFile(null);
+    setRemoveDetailImage(false);
+    setPendingImagePreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return "";
+    });
+  }, []);
+
   const openMasterModal = useCallback(async (product) => {
     setMasterModalProduct(product);
     setLoadingMasterData(true);
+    setDetailBody("");
+    setDetailImageUrl("");
+    setDetailImageThumbUrl("");
+    setDetailImageStoragePath("");
+    setDetailImageThumbStoragePath("");
+    clearDetailImageDraft();
     setMasterForm({
       correctName: product.name || "",
       categories: Array.isArray(product.categories) ? product.categories : [],
@@ -422,9 +459,18 @@ export default function ProductsPage() {
       synonymsText: joinTextList(product.synonyms),
     });
 
+    const detailRef = doc(
+      db,
+      `/artifacts/${appId}/public/data/products/${product.docId}/details/main`
+    );
+
     try {
       const call = httpsCallable(functions, "peekProductMasterData");
-      const { data } = await call({ brand: product.brand, id: product.id });
+      const [peekResponse, detailSnap] = await Promise.all([
+        call({ brand: product.brand, id: product.id }),
+        getDoc(detailRef).catch(() => null),
+      ]);
+      const { data } = peekResponse;
       if (data?.exists && data?.data) {
         const md = data.data;
         setMasterForm({
@@ -435,6 +481,19 @@ export default function ProductsPage() {
           synonymsText: joinTextList(md.synonyms),
         });
       }
+      if (detailSnap?.exists()) {
+        const d = detailSnap.data() || {};
+        const raw = String(d.body ?? "");
+        setDetailBody(
+          raw.length > MAX_PRODUCT_DETAIL_BODY
+            ? raw.slice(0, MAX_PRODUCT_DETAIL_BODY)
+            : raw
+        );
+        setDetailImageUrl(String(d.imageUrl ?? ""));
+        setDetailImageThumbUrl(String(d.imageThumbUrl ?? ""));
+        setDetailImageStoragePath(String(d.imageStoragePath ?? ""));
+        setDetailImageThumbStoragePath(String(d.imageThumbStoragePath ?? ""));
+      }
     } catch (e) {
       console.error("Помилка завантаження master-даних", e);
       setStatusMessage({
@@ -444,14 +503,63 @@ export default function ProductsPage() {
     } finally {
       setLoadingMasterData(false);
     }
-  }, []);
+  }, [appId, clearDetailImageDraft]);
 
   const closeMasterModal = useCallback(() => {
     setMasterModalProduct(null);
     setLoadingMasterData(false);
     setSavingMasterData(false);
     setDeletingMasterData(false);
+    setDetailBody("");
+    setDetailImageUrl("");
+    setDetailImageThumbUrl("");
+    setDetailImageStoragePath("");
+    setDetailImageThumbStoragePath("");
+    clearDetailImageDraft();
+  }, [clearDetailImageDraft]);
+
+  const applyDetailImageFile = useCallback((file) => {
+    if (!file) return;
+    const coerced = coerceProductImageFile(file);
+    const err = validateProductImageFile(coerced);
+    if (err) {
+      setStatusMessage({ type: "error", text: err });
+      return;
+    }
+    setPendingImageFile(coerced);
+    setRemoveDetailImage(false);
+    setPendingImagePreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(coerced);
+    });
   }, []);
+
+  const handleDetailImagePick = useCallback(
+    (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      applyDetailImageFile(file);
+    },
+    [applyDetailImageFile]
+  );
+
+  const handleDetailImagePaste = useCallback(
+    (e) => {
+      const file = getImageFileFromClipboard(e.clipboardData);
+      if (!file) return;
+      e.preventDefault();
+      e.stopPropagation();
+      applyDetailImageFile(file);
+    },
+    [applyDetailImageFile]
+  );
+
+  const handleRemoveDetailImage = useCallback(() => {
+    clearDetailImageDraft();
+    setRemoveDetailImage(true);
+    setDetailImageUrl("");
+    setDetailImageThumbUrl("");
+  }, [clearDetailImageDraft]);
 
   const handleSaveMasterData = useCallback(async () => {
     if (!masterModalProduct) return;
@@ -494,7 +602,74 @@ export default function ProductsPage() {
           return missingFields.length ? [{ ...nextRow, missingFields }] : [];
         })
       );
-      setStatusMessage({ type: "success", text: "Master-дані товару оновлено" });
+
+      const detailRef = doc(
+        db,
+        `/artifacts/${appId}/public/data/products/${masterModalProduct.docId}/details/main`
+      );
+      const bodyTrim =
+        detailBody.length > MAX_PRODUCT_DETAIL_BODY
+          ? detailBody.slice(0, MAX_PRODUCT_DETAIL_BODY)
+          : detailBody;
+
+      let imagePayload = {};
+      try {
+        if (removeDetailImage && (detailImageStoragePath || detailImageThumbStoragePath)) {
+          await deleteProductImagesAtPaths(
+            detailImageStoragePath,
+            detailImageThumbStoragePath
+          );
+          imagePayload = {
+            imageUrl: deleteField(),
+            imageThumbUrl: deleteField(),
+            imageStoragePath: deleteField(),
+            imageThumbStoragePath: deleteField(),
+          };
+        } else if (pendingImageFile) {
+          const uploaded = await uploadProductImages(
+            appId,
+            masterModalProduct.docId,
+            pendingImageFile
+          );
+          if (detailImageStoragePath || detailImageThumbStoragePath) {
+            await deleteProductImagesAtPaths(
+              detailImageStoragePath,
+              detailImageThumbStoragePath
+            );
+          }
+          imagePayload = uploaded;
+        }
+      } catch (imageErr) {
+        console.error("Помилка завантаження фото", imageErr);
+        setStatusMessage({
+          type: "error",
+          text:
+            imageErr?.message ||
+            "Master-дані збережено, але фото не вдалося завантажити (Storage / права).",
+        });
+        closeMasterModal();
+        return;
+      }
+
+      try {
+        await setDoc(
+          detailRef,
+          { body: bodyTrim, ...imagePayload, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      } catch (detailErr) {
+        console.error("Помилка збереження опису", detailErr);
+        setStatusMessage({
+          type: "error",
+          text:
+            detailErr?.message ||
+            "Master-дані збережено, але опис не вдалося записати (перевірте права Firestore).",
+        });
+        closeMasterModal();
+        return;
+      }
+
+      setStatusMessage({ type: "success", text: "Master-дані та опис товару збережено" });
       closeMasterModal();
     } catch (e) {
       console.error("Помилка збереження master-даних", e);
@@ -505,7 +680,19 @@ export default function ProductsPage() {
     } finally {
       setSavingMasterData(false);
     }
-  }, [masterModalProduct, masterForm, masterMonitorFields, applyProductPatch, closeMasterModal]);
+  }, [
+    masterModalProduct,
+    masterForm,
+    masterMonitorFields,
+    applyProductPatch,
+    closeMasterModal,
+    detailBody,
+    appId,
+    pendingImageFile,
+    removeDetailImage,
+    detailImageStoragePath,
+    detailImageThumbStoragePath,
+  ]);
 
   const handleDeleteMasterData = useCallback(async () => {
     if (!masterModalProduct) return;
@@ -1960,6 +2147,78 @@ export default function ProductsPage() {
                     />
                     <p className="mt-1 text-xs text-slate-500">
                       При збереженні синоніми нормалізуються так само, як артикул у пошуку.
+                    </p>
+                  </div>
+
+                  <div className="border-t border-slate-200 pt-4">
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Фото для порталу
+                    </label>
+                    <p className="text-xs text-slate-500 mb-2">
+                      JPEG / PNG / WebP, до 8 МБ. Файл або вставка з буфера (Ctrl+V) у зону нижче.
+                      Зберігається в Storage, посилання — у{" "}
+                      <code className="bg-slate-100 px-1 rounded">details/main</code>.
+                    </p>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onPaste={handleDetailImagePaste}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") e.currentTarget.focus();
+                      }}
+                      className="mb-3 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50/80 p-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-200"
+                      title="Клікніть сюди та натисніть Ctrl+V, щоб вставити скріншот"
+                    >
+                      <p className="text-xs text-slate-500 text-center pointer-events-none">
+                        Зона вставки: клік → Ctrl+V (скріншот або копія зображення)
+                      </p>
+                    </div>
+                    {(pendingImagePreview || detailImageUrl) && !removeDetailImage ? (
+                      <div className="mb-3 flex flex-col sm:flex-row gap-3 items-start">
+                        <img
+                          src={pendingImagePreview || detailImageUrl}
+                          alt=""
+                          className="max-h-40 max-w-full rounded-lg border object-contain bg-slate-50"
+                        />
+                        <button
+                          type="button"
+                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm"
+                          onClick={handleRemoveDetailImage}
+                          disabled={savingMasterData}
+                        >
+                          Прибрати фото
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 mb-2">Фото ще не додано.</p>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleDetailImagePick}
+                      disabled={savingMasterData || deletingMasterData}
+                      className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                    />
+                  </div>
+
+                  <div className="border-t border-slate-200 pt-4">
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Детальний опис для порталу (Markdown як текст)
+                    </label>
+                    <p className="text-xs text-slate-500 mb-2">
+                      Зберігається в{" "}
+                      <code className="bg-slate-100 px-1 rounded">products/…/details/main</code> — не
+                      змінює brand/id товару. На порталі показується без HTML-рендеру.
+                    </p>
+                    <textarea
+                      className="w-full px-3 py-2 border rounded-lg min-h-[140px] font-mono text-xs"
+                      value={detailBody}
+                      onChange={(e) => setDetailBody(e.target.value)}
+                      placeholder="Довгий опис, переноси рядків, можна синтаксис Markdown (відображається як текст)"
+                      maxLength={MAX_PRODUCT_DETAIL_BODY}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Максимум {MAX_PRODUCT_DETAIL_BODY.toLocaleString("uk-UA")} символів.
                     </p>
                   </div>
 

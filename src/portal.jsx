@@ -18,6 +18,26 @@ if (!appId) {
   console.error("VITE_PROJECT_ID environment variable is required");
 }
 
+/** Свайп справа по полотну товарів (дотик починається біля лівого краю екрана) відкриває каталог на мобілці. */
+const CANVAS_SWIPE_FROM_LEFT_MAX_PX = 148;
+/** Мінімальний хід праворуч — менше значення = легше відкрити каталог одним свайпом. */
+const CANVAS_SWIPE_OPEN_MIN_DX_PX = 36;
+/** Чим менше — тим більш «діагональний» свайп ще проходить (занадто мало збільшує ризик при вертикальному скролі). */
+const CANVAS_SWIPE_HORIZONTAL_DOMINANCE = 1.12;
+
+const PORTAL_CATALOG_EDGE_LS_KEY = 'portalCatalogEdgeTopPx';
+/** Утримувати ручку перед перетягуванням (тап коротший за це завжди відкриває каталог). */
+const CATALOG_EDGE_HOLD_MS = 480;
+/** Зміщення по Y після утримування, щоб зафіксувати позицію (не відкривати каталог). */
+const CATALOG_EDGE_DRAG_COMMIT_PX = 10;
+
+function clampCatalogEdgeTop(px, vh) {
+  const half = 56;
+  const lo = half;
+  const hi = Math.max(lo + 1, vh - half);
+  return Math.min(Math.max(px, lo), hi);
+}
+
 /** UI helper */
 function Pill({ children, tone='gray' }) {
   const tones = {
@@ -283,6 +303,202 @@ function PortalApp() {
   const [selectedBrand, setSelectedBrand] = useState(null); // brandName
   const [expandedGroup, setExpandedGroup] = useState(null); // groupId або null
   const [brandSearch, setBrandSearch] = useState(""); // Пошук брендів у режимі "Всі бренди"
+  /** На мобілці смарт-панель у drawer зліва; на md+ завжди видима в сітці. */
+  const [mobileSmartPanelOpen, setMobileSmartPanelOpen] = useState(false);
+
+  /** Вертикальна позиція ручки «Каталог» (px від верху вьюпорту); перетягувати після утримування. */
+  const [catalogEdgeTopPx, setCatalogEdgeTopPx] = useState(() => {
+    if (typeof window === 'undefined') return 260;
+    const vh = window.innerHeight;
+    try {
+      const raw = localStorage.getItem(PORTAL_CATALOG_EDGE_LS_KEY);
+      if (raw != null) {
+        const n = Number(raw);
+        if (Number.isFinite(n)) return clampCatalogEdgeTop(n, vh);
+      }
+    } catch (_) { /* ignore */ }
+    return clampCatalogEdgeTop(vh * 0.36, vh);
+  });
+
+  const catalogEdgeFabRef = useRef(null);
+  const catalogEdgeHoldRef = useRef(null);
+  const catalogEdgeSuppressClickRef = useRef(false);
+  /** Слухач touchmove на window з passive:false — знімає прокрутку сторінки під час drag ручки. */
+  const catalogEdgeTouchLockRef = useRef(null);
+
+  /** Свайп справа від лівого краю по полотні товарів (мобілка). */
+  const productCanvasSwipeRef = useRef(null);
+
+  const closeMobileSmartPanel = useCallback(() => {
+    setMobileSmartPanelOpen(false);
+  }, []);
+
+  const unblockPageScrollAfterCatalogDrag = useCallback(() => {
+    const fn = catalogEdgeTouchLockRef.current;
+    if (!fn) return;
+    window.removeEventListener('touchmove', fn, { passive: false, capture: true });
+    catalogEdgeTouchLockRef.current = null;
+  }, []);
+
+  const blockPageScrollDuringCatalogDrag = useCallback(() => {
+    if (catalogEdgeTouchLockRef.current) return;
+    const fn = (ev) => {
+      ev.preventDefault();
+    };
+    catalogEdgeTouchLockRef.current = fn;
+    window.addEventListener('touchmove', fn, { passive: false, capture: true });
+  }, []);
+
+  const endCatalogEdgeGesture = useCallback(
+    (e) => {
+      try {
+        const st = catalogEdgeHoldRef.current;
+        if (!st || e.pointerId !== st.pointerId) return;
+
+        const dy = e.clientY - st.startY;
+        const finalTop = clampCatalogEdgeTop(st.startTop + dy, window.innerHeight);
+
+        if (st.longPressTimer != null) {
+          window.clearTimeout(st.longPressTimer);
+          st.longPressTimer = null;
+        }
+
+        const el = catalogEdgeFabRef.current;
+        if (st.captureActive && el) {
+          try {
+            el.releasePointerCapture(e.pointerId);
+          } catch (_) { /* ignore */ }
+        }
+
+        catalogEdgeHoldRef.current = null;
+
+        if (st.dragActivated && st.didDrag) {
+          catalogEdgeSuppressClickRef.current = true;
+          setCatalogEdgeTopPx(finalTop);
+          try {
+            localStorage.setItem(PORTAL_CATALOG_EDGE_LS_KEY, String(finalTop));
+          } catch (_) { /* ignore */ }
+          return;
+        }
+
+        if (st.dragActivated && !st.didDrag) {
+          setCatalogEdgeTopPx(st.startTop);
+        }
+      } finally {
+        unblockPageScrollAfterCatalogDrag();
+      }
+    },
+    [unblockPageScrollAfterCatalogDrag]
+  );
+
+  const onCatalogEdgePointerDown = useCallback(
+    (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      catalogEdgeSuppressClickRef.current = false;
+
+      const st = {
+        pointerId: e.pointerId,
+        startY: e.clientY,
+        startTop: catalogEdgeTopPx,
+        dragActivated: false,
+        didDrag: false,
+        longPressTimer: null,
+        captureActive: false,
+      };
+
+      st.longPressTimer = window.setTimeout(() => {
+        const cur = catalogEdgeHoldRef.current;
+        if (!cur || cur.pointerId !== st.pointerId) return;
+        cur.dragActivated = true;
+        blockPageScrollDuringCatalogDrag();
+        try {
+          if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(12);
+        } catch (_) { /* ignore */ }
+        const btn = catalogEdgeFabRef.current;
+        if (btn) {
+          try {
+            btn.setPointerCapture(cur.pointerId);
+            cur.captureActive = true;
+          } catch (_) { /* ignore */ }
+        }
+      }, CATALOG_EDGE_HOLD_MS);
+
+      catalogEdgeHoldRef.current = st;
+    },
+    [catalogEdgeTopPx, blockPageScrollDuringCatalogDrag]
+  );
+
+  const onCatalogEdgePointerMove = useCallback((e) => {
+    const st = catalogEdgeHoldRef.current;
+    if (!st || e.pointerId !== st.pointerId) return;
+    if (!st.dragActivated) return;
+    try {
+      e.preventDefault();
+    } catch (_) { /* ignore */ }
+    const dy = e.clientY - st.startY;
+    if (Math.abs(dy) > CATALOG_EDGE_DRAG_COMMIT_PX) st.didDrag = true;
+    setCatalogEdgeTopPx(clampCatalogEdgeTop(st.startTop + dy, window.innerHeight));
+  }, []);
+
+  const onCatalogEdgePointerUp = useCallback(
+    (e) => {
+      endCatalogEdgeGesture(e);
+    },
+    [endCatalogEdgeGesture]
+  );
+
+  const onCatalogEdgeClick = useCallback((e) => {
+    if (catalogEdgeSuppressClickRef.current) {
+      catalogEdgeSuppressClickRef.current = false;
+      e.preventDefault();
+      return;
+    }
+    setMobileSmartPanelOpen(true);
+  }, []);
+
+  const onCatalogEdgeLostPointerCapture = useCallback((e) => {
+    const st = catalogEdgeHoldRef.current;
+    if (!st || e.pointerId !== st.pointerId) return;
+    if (st.longPressTimer != null) {
+      window.clearTimeout(st.longPressTimer);
+      st.longPressTimer = null;
+    }
+    /* Не обнуляємо catalogEdgeHoldRef — завершення жесту на pointerup/cancel. */
+  }, []);
+
+  const onProductCanvasTouchStart = useCallback(
+    (e) => {
+      if (mobileSmartPanelOpen) return;
+      if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) return;
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (t.clientX > CANVAS_SWIPE_FROM_LEFT_MAX_PX) return;
+      productCanvasSwipeRef.current = { x0: t.clientX, y0: t.clientY, t0: Date.now() };
+    },
+    [mobileSmartPanelOpen]
+  );
+
+  const onProductCanvasTouchEnd = useCallback(
+    (e) => {
+      const st = productCanvasSwipeRef.current;
+      productCanvasSwipeRef.current = null;
+      if (!st || mobileSmartPanelOpen) return;
+      if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) return;
+      if (e.changedTouches.length !== 1) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - st.x0;
+      const dy = t.clientY - st.y0;
+      if (dx < CANVAS_SWIPE_OPEN_MIN_DX_PX) return;
+      if (Math.abs(dy) > dx / CANVAS_SWIPE_HORIZONTAL_DOMINANCE) return;
+      if (Date.now() - st.t0 > 950) return;
+      setMobileSmartPanelOpen(true);
+    },
+    [mobileSmartPanelOpen]
+  );
+
+  const onProductCanvasTouchCancel = useCallback(() => {
+    productCanvasSwipeRef.current = null;
+  }, []);
 
   // Групи та бренди
   const [productGroups, setProductGroups] = useState([]); // Групи з brandFolders
@@ -902,6 +1118,37 @@ function PortalApp() {
     }
   };
 
+  useEffect(() => {
+    if (view !== 'products') closeMobileSmartPanel();
+  }, [view, closeMobileSmartPanel]);
+
+  useEffect(() => {
+    if (!mobileSmartPanelOpen) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') closeMobileSmartPanel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileSmartPanelOpen, closeMobileSmartPanel]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setCatalogEdgeTopPx((t) => clampCatalogEdgeTop(t, window.innerHeight));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const fn = catalogEdgeTouchLockRef.current;
+      if (fn) {
+        window.removeEventListener('touchmove', fn, { passive: false, capture: true });
+        catalogEdgeTouchLockRef.current = null;
+      }
+    };
+  }, []);
+
   const uahTone = balances.UAH >= 0 ? 'green' : 'red';
   const eurTone = balances.EUR >= 0 ? 'green' : 'red';
 
@@ -1076,9 +1323,64 @@ function PortalApp() {
         </div>
 
         {view === 'products' && (
-          <div className="grid grid-cols-12 gap-4">
-            <aside className="col-span-12 md:col-span-3">
-              <div className="bg-white rounded border border-gray-200 p-2">
+          <>
+            {!mobileSmartPanelOpen ? (
+              <button
+                ref={catalogEdgeFabRef}
+                type="button"
+                aria-label="Торкніться — відкрити каталог. Утримуйте ~0,5 с, потім перетягніть вгору або вниз — змінити положення кнопки"
+                className="fixed left-0 z-[45] flex md:hidden cursor-pointer touch-none select-none flex-col items-center justify-center gap-2 rounded-r-2xl border border-white/30 bg-indigo-600 py-3 pl-[max(10px,calc(env(safe-area-inset-left,0px)+8px))] pr-3 text-white shadow-[4px_2px_20px_rgba(49,46,129,0.4)] active:bg-indigo-700 min-h-[44px] min-w-[44px] -ml-1"
+                style={{
+                  top: catalogEdgeTopPx,
+                  transform: 'translateY(-50%)',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+                onPointerDown={onCatalogEdgePointerDown}
+                onPointerMove={onCatalogEdgePointerMove}
+                onPointerUp={onCatalogEdgePointerUp}
+                onPointerCancel={onCatalogEdgePointerUp}
+                onLostPointerCapture={onCatalogEdgeLostPointerCapture}
+                onClick={onCatalogEdgeClick}
+              >
+                <span className="flex flex-col gap-0.5 opacity-85" aria-hidden>
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                </span>
+                <span
+                  className="max-h-[9rem] text-center text-[11px] font-semibold uppercase tracking-wide leading-tight text-white/95"
+                  style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+                >
+                  Каталог
+                </span>
+              </button>
+            ) : null}
+            {mobileSmartPanelOpen ? (
+              <button
+                type="button"
+                aria-label="Закрити меню каталогу"
+                className="fixed inset-0 z-40 bg-black/40 md:hidden"
+                onClick={closeMobileSmartPanel}
+              />
+            ) : null}
+            <div className="md:grid md:grid-cols-12 md:gap-4">
+            <aside
+              className={`fixed inset-y-0 left-0 z-50 flex w-[min(90vw,20rem)] flex-col bg-gray-100 py-3 pl-3 pr-2 shadow-xl transition-transform duration-200 ease-out md:relative md:inset-auto md:z-auto md:col-span-3 md:w-auto md:translate-x-0 md:bg-transparent md:p-0 md:shadow-none ${
+                mobileSmartPanelOpen ? 'translate-x-0' : '-translate-x-full'
+              }`}
+            >
+              <div className="flex min-h-0 flex-1 flex-col rounded border border-gray-200 bg-white p-2 md:min-h-0 md:flex-none">
+                <div className="mb-2 flex items-center justify-between gap-2 border-b border-gray-200 pb-2 md:hidden">
+                  <span className="text-sm font-semibold text-gray-900">Вибір каталогу</span>
+                  <button
+                    type="button"
+                    className="rounded-lg px-2 py-1 text-lg leading-none text-gray-600 hover:bg-gray-100"
+                    onClick={closeMobileSmartPanel}
+                    aria-label="Закрити"
+                  >
+                    ×
+                  </button>
+                </div>
                 {/* Тумблер режимів */}
                 <div className="flex gap-1 mb-2">
                     <button
@@ -1102,7 +1404,7 @@ function PortalApp() {
                   </div>
 
                 {smartPanelMode === 'groups' ? (
-                  <div className="space-y-1">
+                    <div className="max-h-[55vh] flex-1 space-y-1 overflow-auto md:max-h-none md:flex-none md:overflow-visible">
                     {productGroups.map(group => {
                       const isExpanded = expandedGroup === group.id;
                       const isSelected = selectedGroup === group.id;
@@ -1121,6 +1423,7 @@ function PortalApp() {
                                   setLastDocSnap(null);
                                   setHasMore(false);
                                   loadProductsByBrand(group.brands[0], false);
+                                  closeMobileSmartPanel();
                                 } else {
                                   // Для preset-груп з кількома брендами - тільки розгортаємо/згортаємо список
                                   // Товари НЕ завантажуються до кліку на конкретний бренд
@@ -1143,6 +1446,7 @@ function PortalApp() {
                                 setLastDocSnap(null);
                                 setHasMore(false);
                                 loadProductsByGroup(group.id, false);
+                                closeMobileSmartPanel();
                               } else {
                                 // Стара структура (міграція) - завантажуємо товари
                                 setSelectedGroup(group.id);
@@ -1150,6 +1454,7 @@ function PortalApp() {
                                 setLastDocSnap(null);
                                 setHasMore(false);
                                 loadProductsByGroup(group.id, false);
+                                closeMobileSmartPanel();
                               }
                             }}
                           >
@@ -1171,14 +1476,15 @@ function PortalApp() {
                                     setLastDocSnap(null);
                                     setHasMore(false);
                                     loadProductsByBrand(brandName, false);
+                                    closeMobileSmartPanel();
                                   }}
                                 >
                                   {brandName}
                                 </button>
                               ))}
-                  </div>
-        )}
-                </div>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                     {productGroups.length === 0 && (
@@ -1209,6 +1515,7 @@ function PortalApp() {
                                 setLastDocSnap(null);
                                 setHasMore(false);
                                 loadProductsByBrand(b.name, false);
+                                closeMobileSmartPanel();
                               }}
                             >
                               {b.name}
@@ -1224,11 +1531,17 @@ function PortalApp() {
               </div>
             </aside>
 
-            <section className="col-span-12 md:col-span-9">
+            <section
+              className="col-span-12 md:col-span-9"
+              onTouchStart={onProductCanvasTouchStart}
+              onTouchEnd={onProductCanvasTouchEnd}
+              onTouchCancel={onProductCanvasTouchCancel}
+            >
               {isFetchingProducts && (
                 <div className="text-center py-8 text-gray-500">Завантаження товарів...</div>
               )}
           <ProductCatalog
+            appId={appId}
             clientPricingRules={clientPricingRules}
             products={products}
             client={safeClient}
@@ -1268,6 +1581,7 @@ function PortalApp() {
               )}
             </section>
           </div>
+          </>
         )}
 
 

@@ -4,6 +4,7 @@ import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import { getAuth } from 'firebase/auth';
 import { getFunctions } from 'firebase/functions';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_API_KEY,
@@ -42,6 +43,7 @@ export const auth = getAuth(app);
 const REGION = import.meta.env.VITE_FUNCTIONS_REGION || undefined;
 export const functions = getFunctions(app, import.meta.env.VITE_FUNCTIONS_REGION || 'europe-central2');
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 // ---- тільки для локальної відладки (localhost) ----
 if (location.hostname === 'localhost') {
   // робимо зручні хелпери в консолі
