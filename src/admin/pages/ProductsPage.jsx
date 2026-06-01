@@ -26,6 +26,7 @@ import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import Tabs from "../components/Tabs.jsx";
 import { useClientSearch } from "../hooks/useClientSearch.js";
+import { offerSourceLabel } from "../../utils/cartStockWarning";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -1879,7 +1880,7 @@ export default function ProductsPage() {
               <th className="px-3 py-2 text-left">Бренд</th>
               <th className="px-3 py-2 text-left">Артикул</th>
               <th className="px-3 py-2 text-left">Назва</th>
-              <th className="px-3 py-2 text-left">Постачальник</th>
+              <th className="px-3 py-2 text-left">Джерело</th>
               <th className="px-3 py-2 text-left">Наявність</th>
               <th className="px-3 py-2 text-left">Ціна</th>
               <th className="px-3 py-2 text-left">Дії</th>
@@ -1903,7 +1904,7 @@ export default function ProductsPage() {
                       </td>
                     </>
                   )}
-                  <td className="px-3 py-2 whitespace-nowrap">{row.supplier}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{offerSourceLabel(row.supplier)}</td>
                   <td className="px-3 py-2 whitespace-nowrap">{row.stock}</td>
                   <td className="px-3 py-2 whitespace-nowrap">
                     {(() => {

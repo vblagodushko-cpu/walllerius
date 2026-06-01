@@ -157,8 +157,10 @@ function roundPrice(price) {
 }
 
 // Функція для генерації CSV з продуктів
+const WAREHOUSE_CSV_HEADER = ["brand", "id", "name", "stock", "price"];
+
 async function generateCsvFromProducts(products, priceType, clientCode, clientPricingRules) {
-  const rows = [];
+  const rows = [WAREHOUSE_CSV_HEADER];
   
   for (const product of products) {
     const offer = product.offers?.find(o => o.supplier === "Мій склад");

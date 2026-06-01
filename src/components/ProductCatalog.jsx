@@ -2,6 +2,13 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase-config';
 import Tooltip from './Tooltip.jsx';
+import {
+  WAREHOUSE_SUPPLIER,
+  isWarehouseLine,
+  getCartLineStock,
+  buildStockWarningLines,
+  confirmStockOverOrder,
+} from '../utils/cartStockWarning.js';
 
 const MAX_DETAIL_BODY_CHARS = 80000;
 
@@ -84,7 +91,27 @@ function ProductDetailModal({ product, body, imageUrl, loading, error, onClose }
 
 const AddToCartModal = ({ product, onAddToCart, onClose }) => {
   const [quantity, setQuantity] = useState(1);
-  const handleAdd = () => { onAddToCart(parseInt(quantity, 10) || 1); onClose(); };
+  const supplier = product.selectedSupplier || product.supplier || WAREHOUSE_SUPPLIER;
+  const warehouseLine = isWarehouseLine({ supplier });
+  const availableStock = warehouseLine ? getCartLineStock(product) : null;
+  const qtyNum = parseInt(quantity, 10) || 1;
+  const overStock =
+    warehouseLine &&
+    availableStock !== null &&
+    qtyNum > availableStock;
+
+  const handleAdd = () => {
+    const q = parseInt(quantity, 10) || 1;
+    if (warehouseLine && availableStock !== null && q > availableStock) {
+      const lines = buildStockWarningLines(
+        [{ ...product, supplier, stock: availableStock, quantity: q }],
+        null
+      );
+      if (!confirmStockOverOrder(lines, { singleLine: true })) return;
+    }
+    onAddToCart(q);
+    onClose();
+  };
   const handleDecrease = () => setQuantity(prev => Math.max(1, (parseInt(prev, 10) || 1) - 1));
   const handleIncrease = () => setQuantity(prev => (parseInt(prev, 10) || 1) + 1);
   const handleInputFocus = (e) => e.target.select();
@@ -128,6 +155,14 @@ const AddToCartModal = ({ product, onAddToCart, onClose }) => {
                 type="button"
               >+</button>
             </div>
+            {warehouseLine && availableStock !== null ? (
+              <p className="mt-2 text-xs text-gray-500">На складі: {availableStock}</p>
+            ) : null}
+            {overStock ? (
+              <p className="mt-1 text-xs font-medium text-orange-500">
+                Замовлено більше, ніж на складі
+              </p>
+            ) : null}
           </div>
           <div className="flex justify-end gap-4">
             <button onClick={onClose} className="btn bg-gray-300 hover:bg-gray-400 text-black">Скасувати</button>
@@ -763,10 +798,17 @@ const ProductCatalog = ({
                         return price > 0 ? `${price.toFixed(2)} ${currencySymbol}` : "—";
                       })()}
                     </td>
-                    <td className="px-3 py-2 text-center whitespace-nowrap font-semibold text-sm border border-gray-300">
+                    <td className="px-3 py-2 text-center whitespace-nowrap text-sm border border-gray-300">
                       {(() => {
-                        const stock = row.stock || 0;
-                        return stock > 20 ? '20+' : stock;
+                        const stock = Number(row.stock) || 0;
+                        if (stock <= 0) {
+                          return (
+                            <span className="text-[11px] font-medium text-orange-500">немає</span>
+                          );
+                        }
+                        return (
+                          <span className="font-semibold">{stock > 20 ? '20+' : stock}</span>
+                        );
                       })()}
                     </td>
                     <td className="px-3 py-2 align-top text-center text-sm border border-gray-300">

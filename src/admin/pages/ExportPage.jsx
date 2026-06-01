@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
+import { offerSourceLabel } from "../../utils/cartStockWarning";
 
 const appId = import.meta.env.VITE_PROJECT_ID || "embryo-project";
 
@@ -73,7 +74,7 @@ export default function ExportPage({ setStatus }) {
         name: p.name || "",
         stock: p.stock ?? 0,
         price: (p.publicPrices && (p.publicPrices[priceType] ?? p.publicPrices["ціна 1"] ?? p.publicPrices["роздріб"] ?? p.publicPrices["ціна опт"])) || 0,
-        supplier: p.supplier || ""
+        source: offerSourceLabel(p.supplier),
       }));
     } catch (e) {
       console.error(e);
@@ -87,7 +88,7 @@ export default function ExportPage({ setStatus }) {
   const onExportCSV = async () => {
     const items = await exportFetch();
     if (!items.length) { setStatus?.({ type:"info", message:"Немає даних для експорту" }); return; }
-    const header = ["brand","id","name","stock","price","supplier"];
+    const header = ["brand","id","name","stock","price","source"];
     const lines = [
       header.join(";"),
       ...items.map(r => header.map(k => toCsvValue(r[k])).join(";"))
@@ -298,15 +299,18 @@ export default function ExportPage({ setStatus }) {
             </div>
           ) : (
             <div className="mb-3">
-              <label className="block text-sm text-slate-600 mb-1">Код клієнта</label>
+              <label className="block text-sm text-slate-600 mb-1">ID клієнта (uid з картки клієнта)</label>
               <input
                 type="text"
                 className="p-2 border rounded w-full"
                 value={warehouseClientCode}
                 onChange={(e) => setWarehouseClientCode(e.target.value)}
-                placeholder="Введіть код клієнта"
+                placeholder="Напр. id документа в «Клієнти»"
                 disabled={warehouseBusy}
               />
+              <p className="text-xs text-slate-500 mt-1">
+                Це не код з взаєморозрахунків — значення з поля code у clientsAuth (зазвичай збігається з id клієнта).
+              </p>
             </div>
           )}
 

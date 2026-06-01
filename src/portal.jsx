@@ -12,6 +12,13 @@ import ProductCatalog from './components/ProductCatalog.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
 import { logger } from './utils/logger.js';
+import {
+  isWarehouseLine,
+  getCartLineStock,
+  buildStockWarningLines,
+  confirmStockOverOrder,
+  warehouseStockFromProductDoc,
+} from './utils/cartStockWarning.js';
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -232,6 +239,10 @@ function CartDrawer({ open, onClose, items, onChangeQty, onRemove, onPlaceOrder,
           <div className="space-y-3 overflow-y-auto h-[70vh] pr-1">
             {items.map((it, idx) => {
               const displayPrice = getDisplayPrice(Number(it.price || 0));
+              const warehouse = isWarehouseLine(it);
+              const stock = warehouse ? getCartLineStock(it) : null;
+              const qty = Math.max(1, Number(it.quantity) || 1);
+              const overStock = warehouse && stock !== null && qty > stock;
               return (
                 <div key={it.docId + ':' + idx} className="border rounded-lg p-3">
                   <div className="flex justify-between gap-3">
@@ -239,6 +250,9 @@ function CartDrawer({ open, onClose, items, onChangeQty, onRemove, onPlaceOrder,
                       <div className="font-medium">{it.brand} — {it.name}</div>
                       <div className="text-xs text-gray-500">арт. {it.id}</div>
                       <div className="text-sm mt-1">Ціна: <b>{displayPrice.toFixed(2)} {currencySymbol}</b></div>
+                      {warehouse && stock !== null ? (
+                        <div className="text-xs text-gray-500 mt-1">На складі: {stock}</div>
+                      ) : null}
                     </div>
                     <button className="text-red-600 text-sm" onClick={() => onRemove(it.docId)}>× Видалити</button>
                   </div>
@@ -248,6 +262,11 @@ function CartDrawer({ open, onClose, items, onChangeQty, onRemove, onPlaceOrder,
                       onChange={(e)=> onChangeQty(it.docId, Math.max(1, Number(e.target.value)||1))}/>
                     <button className="px-2 py-1 rounded bg-gray-100" onClick={() => onChangeQty(it.docId, (it.quantity||1)+1)}>+</button>
                   </div>
+                  {overStock ? (
+                    <p className="mt-2 text-xs font-medium text-orange-500">
+                      Замовлено більше, ніж на складі
+                    </p>
+                  ) : null}
                 </div>
               );
             })}
@@ -983,11 +1002,18 @@ function PortalApp() {
       // Перевіряємо по docId + supplier (один товар може бути від різних постачальників)
       const ex = cur.find(i => i.docId === product.docId && i.supplier === supplier);
       const isNew = !ex;
+      const lineStock = Number(product.selectedOffer?.stock ?? product.stock ?? 0);
       const newCart = ex 
         ? cur.map(i => (i.docId === product.docId && i.supplier === supplier) 
-          ? { ...i, quantity: i.quantity + quantity } 
+          ? { ...i, quantity: i.quantity + quantity, stock: lineStock } 
           : i)
-                : [...cur, { ...product, supplier, price: basePriceEUR, quantity }];
+                : [...cur, {
+          ...product,
+          supplier,
+          stock: lineStock,
+          price: basePriceEUR,
+          quantity,
+        }];
       
       // Показуємо toast повідомлення
       const productName = product.name || 'Товар';
@@ -1014,6 +1040,34 @@ function PortalApp() {
   const handlePlaceOrder = async (cartItems, orderTotal) => {
     if (!user) return;
     if (cartItems.length === 0) { alert('Ваш кошик порожній!'); return; }
+
+    const warehouseDocIds = [
+      ...new Set(
+        cartItems.filter((it) => isWarehouseLine(it) && it.docId).map((it) => it.docId)
+      ),
+    ];
+    if (warehouseDocIds.length > 0) {
+      try {
+        const stockByDocId = {};
+        await Promise.all(
+          warehouseDocIds.map(async (docId) => {
+            const snap = await getDoc(
+              doc(db, `/artifacts/${appId}/public/data/products/${docId}`)
+            );
+            stockByDocId[docId] = snap.exists()
+              ? warehouseStockFromProductDoc(snap.data())
+              : getCartLineStock(cartItems.find((c) => c.docId === docId)) ?? 0;
+          })
+        );
+        const warnLines = buildStockWarningLines(cartItems, stockByDocId);
+        if (warnLines.length && !confirmStockOverOrder(warnLines)) return;
+      } catch (e) {
+        logger.error('Перевірка залишку перед замовленням:', e);
+        const fallbackLines = buildStockWarningLines(cartItems, null);
+        if (fallbackLines.length && !confirmStockOverOrder(fallbackLines)) return;
+      }
+    }
+
     setPlacingOrder(true);
     try {
       const call = httpsCallable(functions, 'placeOrderV2');

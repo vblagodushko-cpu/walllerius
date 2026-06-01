@@ -1963,3 +1963,4 @@ try { Object.assign(exports, require("./suppliers")); } catch (e) { logger.warn(
 try { Object.assign(exports, require("./ukrsklad")); } catch (e) { logger.warn("ukrsklad module not found", String(e)); }
 try { Object.assign(exports, require("./settlements")); } catch (e) { logger.warn("settlements module not found", String(e)); }
 try { Object.assign(exports, require("./warehouse")); } catch (e) { logger.warn("warehouse module not found", String(e)); }
+try { Object.assign(exports, require("./adminExport")); } catch (e) { logger.warn("adminExport module not found", String(e)); }

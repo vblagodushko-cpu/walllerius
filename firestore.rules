@@ -110,6 +110,11 @@ service cloud.firestore {
           allow read, delete: if isAdmin(); // Читати та видаляти може тільки адмін
           allow update: if false; // Оновлення заборонено (заявки не оновлюються)
         }
+
+        // Стабільні URL прайс-листів складу (адмін «Експорт»)
+        match /warehousePriceListUrls/{urlId} {
+          allow read, write: if isAdmin();
+        }
       }
       
       // --- 3. ПУБЛІЧНІ МЕТАДАНІ (напр. лічильники) ---
