@@ -9,6 +9,7 @@
  *  - placeOrderV2 (optimized: pricingRules cache + batch get)
  *  - test
  *  - deleteAllProducts
+ *  - suggestProductEnrichment (AI master-data suggestions)
  *  - everything from: auth.js, suppliers.js, ukrsklad.js, settlements.js
  */
 
@@ -128,6 +129,10 @@ exports.syncAdminClaim = onCall({ region: REGION, cors: true }, async (request) 
  * Використовується для діагностики проблем з доступом
  */
 exports.checkAdminStatus = onCall({ region: REGION, cors: true }, async (request) => {
+  if (!request.auth?.token?.admin) {
+    throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+  }
+
   const { email } = request.data || {};
   if (!email) {
     throw new HttpsError("invalid-argument", "Email обов'язковий.");
@@ -231,6 +236,7 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     categories,
     pack,
     tolerances,
+    toleranceTags,
     synonyms,
   } = request.data || {};
 
@@ -242,7 +248,13 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     resolveProductMasterFirestoreId,
     defaultProductMasterDocId,
     getProductMasterData,
+    normalizePack,
   } = require("./shared");
+  const {
+    parseToleranceTags,
+    normalizeToleranceTags,
+    toleranceGroupsFromTags,
+  } = require("./shared/tolerances");
   const cleanProductDocId = sharedStr(productDocId, 200);
   const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
   const cleanId = normalizeArticle(id);
@@ -268,9 +280,14 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
 
   const safeCorrectName = sharedStr(correctName, 500);
   const safeCategories = cleanList(categories, 50, 120);
-  const safePack = sharedStr(pack, 200);
+  const safePack = normalizePack(pack);
   const safeTolerances = sharedStr(tolerances, 500);
   const safeSynonyms = cleanList(synonyms, 100, 120).map(normalizeArticle).filter(Boolean);
+  const explicitToleranceTags = normalizeToleranceTags(toleranceTags);
+  const safeToleranceTags = explicitToleranceTags.length
+    ? explicitToleranceTags
+    : parseToleranceTags(safeTolerances);
+  const safeToleranceGroups = toleranceGroupsFromTags(safeToleranceTags);
 
   const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${cleanProductDocId}`);
   const productSnap = await productRef.get();
@@ -306,6 +323,8 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     categories: safeCategories,
     pack: safePack,
     tolerances: safeTolerances,
+    toleranceTags: safeToleranceTags,
+    toleranceGroups: safeToleranceGroups,
     synonyms: safeSynonyms,
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
@@ -315,6 +334,8 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     categories: safeCategories,
     pack: safePack,
     tolerances: safeTolerances,
+    toleranceTags: safeToleranceTags,
+    toleranceGroups: safeToleranceGroups,
     synonyms: safeSynonyms,
     masterDataUpdatedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -461,6 +482,8 @@ exports.peekProductMasterData = onCall({ region: REGION, cors: true }, async (re
       categories: keep.categories,
       pack: keep.pack,
       tolerances: keep.tolerances,
+      toleranceTags: keep.toleranceTags,
+      toleranceGroups: keep.toleranceGroups,
       synonyms: keep.synonyms,
     },
   };
@@ -615,6 +638,12 @@ exports.monitorProductMasterData = onCall({ region: REGION, cors: true }, async 
           : (Array.isArray(productData.categories) ? productData.categories : []),
         pack: masterData?.pack || productData.pack || "",
         tolerances: masterData?.tolerances || productData.tolerances || "",
+        toleranceTags: Array.isArray(masterData?.toleranceTags)
+          ? masterData.toleranceTags
+          : (Array.isArray(productData.toleranceTags) ? productData.toleranceTags : []),
+        toleranceGroups: Array.isArray(masterData?.toleranceGroups)
+          ? masterData.toleranceGroups
+          : (Array.isArray(productData.toleranceGroups) ? productData.toleranceGroups : []),
         synonyms: Array.isArray(masterData?.synonyms)
           ? masterData.synonyms
           : (Array.isArray(productData.synonyms) ? productData.synonyms : []),
@@ -806,26 +835,18 @@ exports.placeOrderV2 = onCall({
   if (!Array.isArray(items) || !items.length) {
     throw new HttpsError("invalid-argument", "Кошик порожній або некоректний.");
   }
-  // Визначаємо категорію ціни:
-  // 1) якщо фронт явно передав валідний priceCategory → використовуємо його;
-  // 2) інакше намагаємося взяти priceType з профілю клієнта;
-  // 3) fallback → "ціна 1".
-  let category = VALID_CATEGORIES.includes(priceCategory) ? priceCategory : null;
-  if (!category) {
-    try {
-      const clientRef = db.doc(`/artifacts/${APP_ID}/public/data/clients/${uid}`);
-      const clientSnap = await clientRef.get();
-      if (clientSnap.exists) {
-        const clientData = clientSnap.data();
-        const fromProfile = clientData && clientData.priceType;
-        category = VALID_CATEGORIES.includes(fromProfile) ? fromProfile : "ціна 1";
-      } else {
-        category = "ціна 1";
-      }
-    } catch (e) {
-      logger.warn("placeOrderV2: failed to load client priceType, using fallback", { uid, error: String(e && e.message || e) });
-      category = "ціна 1";
+  // Категорія ціни завжди береться з серверного профілю клієнта.
+  // Фронтовий priceCategory ігнорується — клієнт не може сам обрати собі ціну.
+  let category = "ціна 1";
+  try {
+    const clientRef = db.doc(`/artifacts/${APP_ID}/public/data/clients/${uid}`);
+    const clientSnap = await clientRef.get();
+    if (clientSnap.exists) {
+      const fromProfile = clientSnap.data()?.priceType;
+      category = VALID_CATEGORIES.includes(fromProfile) ? fromProfile : "ціна 1";
     }
+  } catch (e) {
+    logger.warn("placeOrderV2: failed to load client priceType, using fallback", { uid, error: String(e && e.message || e) });
   }
 
   // Idempotency by clientRequestId
@@ -1024,9 +1045,6 @@ exports.placeOrderV2 = onCall({
       defaultPriceGroup = priceResult.defaultPriceGroup;
       hasAdjustment = priceResult.hasAdjustment;
       
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.js:541',message:'placeOrderV2: price calculation with client rules',data:{docId:meta.docId,category,priceBefore,priceAfter:unitPrice,hasClientRules:!!clientPricingRules},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
     } else {
       // Стара логіка (fallback)
       unitPrice = Number(offer?.publicPrices?.[category]);
@@ -1049,10 +1067,6 @@ exports.placeOrderV2 = onCall({
       priceGroup = category;
       defaultPriceGroup = category;
       hasAdjustment = false;
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.js:566',message:'placeOrderV2: price calculation fallback',data:{docId:meta.docId,category,unitPrice},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
     }
 
     if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
@@ -1268,30 +1282,17 @@ exports.getDocDetails = onCall({ region: REGION, cors: true }, async (request) =
   const clientSnap = await db.doc(`/artifacts/${APP_ID}/public/data/clients/${code}`).get();
   if (!clientSnap.exists) throw new HttpsError("permission-denied", "Немає доступу до документа.");
 
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.js:778',message:'getDocDetails: entry',data:{uid,code,type:t,docNumber:num,currency:cur},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
-
   // 3) Шукаємо файл безпосередньо в Google Drive (без індексації)
   // Доступ дозволено до всіх документів з clientCode користувача
   const drive = await mkDrive();
   const fileName = `${t}_${num}_${code}_${cur}.csv`;
-  
-  // #region agent log
-  const driveSearchStart = Date.now();
-  // #endregion
-  
+
   const filesResp = await drive.files.list({
     q: `name='${fileName}' and '${DOCS_FOLDER_ID}' in parents and mimeType='text/csv' and trashed=false`,
     fields: "files(id,name)",
     pageSize: 1,
   });
-  
-  // #region agent log
-  const driveSearchTime = Date.now() - driveSearchStart;
-  fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.js:789',message:'getDocDetails: drive search result',data:{fileName,found:filesResp.data.files?.length>0,driveSearchTimeMs:driveSearchTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
-  
+
   if (!filesResp.data.files || filesResp.data.files.length === 0) {
     throw new HttpsError("not-found", `Документ не знайдено: ${fileName}`);
   }
@@ -1350,8 +1351,17 @@ exports.getCurrencyRate = onCall({ region: REGION, cors: true }, async (request)
 });
 
 exports.getClientPricingRules = onCall({ region: REGION, cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Потрібна авторизація.");
+
   const { clientId } = request.data || {};
   if (!clientId) throw new HttpsError("invalid-argument", "clientId обов'язковий");
+
+  // Лише адмін або сам клієнт може читати свої правила
+  const isAdmin = request.auth?.token?.admin === true;
+  if (!isAdmin && uid !== String(clientId)) {
+    throw new HttpsError("permission-denied", "Немає доступу.");
+  }
   
   const rulesRef = db.doc(`/artifacts/${APP_ID}/public/data/clientPricingRules/${clientId}`);
   const snap = await rulesRef.get();
@@ -1907,8 +1917,21 @@ exports.addFeaturedProduct = onCall({ region: REGION, cors: true }, async (reque
   if (exists) {
     throw new HttpsError("already-exists", "Товар вже в рекомендованих.");
   }
-  
-  items.push({ brand, id, addedAt: Timestamp.now() });
+
+  let docId = null;
+  const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
+  const productSnap = await productsCol
+    .where("brand", "==", String(brand).trim())
+    .where("id", "==", String(id).trim())
+    .limit(1)
+    .get();
+  if (!productSnap.empty) {
+    docId = productSnap.docs[0].id;
+  }
+
+  const entry = { brand, id, addedAt: Timestamp.now() };
+  if (docId) entry.docId = docId;
+  items.push(entry);
   await featuredRef.set({ items }, { merge: true });
   
   logger.info(`Featured product added: ${brand} ${id}`);
@@ -1964,3 +1987,4 @@ try { Object.assign(exports, require("./ukrsklad")); } catch (e) { logger.warn("
 try { Object.assign(exports, require("./settlements")); } catch (e) { logger.warn("settlements module not found", String(e)); }
 try { Object.assign(exports, require("./warehouse")); } catch (e) { logger.warn("warehouse module not found", String(e)); }
 try { Object.assign(exports, require("./adminExport")); } catch (e) { logger.warn("adminExport module not found", String(e)); }
+try { Object.assign(exports, require("./aiEnrichment")); } catch (e) { logger.warn("aiEnrichment module not found", String(e)); }

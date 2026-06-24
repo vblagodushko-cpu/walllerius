@@ -87,10 +87,6 @@ exports.clientLogin = onCall({
     return d;
   };
 
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:90',message:'clientLogin: entry',data:{hasRawClientId:!!rawClientId,phone},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
-
   let clientId = rawClientId;
   if (!clientId) {
     const phone10 = normalizePhone10(phone);
@@ -99,12 +95,7 @@ exports.clientLogin = onCall({
     const snap = await clientsCol.where("phone", "==", phone10).limit(1).get();
     if (snap.empty) throw new HttpsError("not-found", "Клієнт за телефоном не знайдений.");
     const foundDocId = snap.docs[0].id;
-    const foundDocData = snap.docs[0].data();
     clientId = foundDocId; // uid == id документа
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/43d36951-e2f3-464b-a260-765b59298148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:97',message:'clientLogin: found client by phone',data:{phone10,foundDocId,foundDocIdField:foundDocData.id,clientId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
   }
 
   const ref  = getFirestore().doc(`/artifacts/${APP_ID}/private/data/clientsAuth/${clientId}`);

@@ -13,8 +13,13 @@ const REGION = process.env.FUNCTION_REGION || "europe-central2";
 exports.searchProductsByArticle = onCall(
   { region: REGION, cors: true },
   async (request) => {
+    const { HttpsError } = require("firebase-functions/v2/https");
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Потрібна авторизація.");
+    }
+
     const { article } = request.data || {};
-    
+
     if (!article || typeof article !== "string") {
       return { ok: false, error: "Артикул обов'язковий", products: [] };
     }

@@ -37,6 +37,48 @@ const num = (v) => {
 };
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+/** Літри без одиниць: "4", "0.2" (не "200 мл", не "4л"). */
+function formatPackLiters(liters) {
+  const v = Math.round(liters * 1000) / 1000;
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (Number.isInteger(v)) return String(v);
+  return String(v).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+function normalizePack(value) {
+  const raw = str(value, 200);
+  if (!raw) return "";
+
+  const compact = raw.replace(/\s+/g, "").toLowerCase();
+
+  const mlCompact = compact.match(/^(\d+(?:[.,]\d+)?)(?:мл|ml)$/i);
+  if (mlCompact) {
+    return formatPackLiters(parseFloat(mlCompact[1].replace(",", ".")) / 1000);
+  }
+
+  const literCompact = compact.match(/^(\d+(?:[.,]\d+)?)(?:л|l|літр|litre|liter)s?\.?$/i);
+  if (literCompact) {
+    return formatPackLiters(parseFloat(literCompact[1].replace(",", ".")));
+  }
+
+  const plainNum = raw.match(/^(\d+(?:[.,]\d+)?)$/);
+  if (plainNum) {
+    return formatPackLiters(parseFloat(plainNum[1].replace(",", ".")));
+  }
+
+  const embeddedLiter = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:л|l|літр(?:а|ів)?)\b/i);
+  if (embeddedLiter) {
+    return formatPackLiters(parseFloat(embeddedLiter[1].replace(",", ".")));
+  }
+
+  const embeddedMl = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:мл|ml)\b/i);
+  if (embeddedMl) {
+    return formatPackLiters(parseFloat(embeddedMl[1].replace(",", ".")) / 1000);
+  }
+
+  return raw;
+}
+
 const normalizeArticle = (v) =>
   str(v, 200).toUpperCase().replace(/\s+/g, "").replace(/[^\w.-]/g, "");
 
@@ -263,8 +305,8 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, c
     
     let productData = exists ? productSnap.data() : {};
     
-    // Оновлення базових полів (тільки якщо не встановлені або оновлюємо)
-    if (!productData.brand) productData.brand = brand;
+    // Завжди канонічний brand з normalizeBrand (синоніми) — інакше лишаються старі варіанти регістру
+    productData.brand = brand;
     if (!productData.id) productData.id = article;
     // Оновлюємо name завжди, якщо передано (навіть якщо порожнє)
     if (name !== undefined && name !== null) {
@@ -411,6 +453,7 @@ module.exports = {
   str,
   num,
   round2,
+  normalizePack,
   normalizeArticle,
   normalizeBrand,
   normalizeBrandKey,

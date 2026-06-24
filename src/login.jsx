@@ -15,7 +15,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 
 const PATHS = { login: '/login.html', portal: '/portal.html' };
-const AUTO_REDIRECT_IF_LOGGED_IN = false;
+const AUTO_REDIRECT_IF_LOGGED_IN = true;
 
 function HeaderNav() {
   return (

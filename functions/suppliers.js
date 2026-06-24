@@ -153,7 +153,12 @@ async function processAndSaveProducts(rows, supplier) {
   
   let ok = 0, skipped = 0, removed = 0, filteredOut = 0;
 
-  // Крок 1: Нормалізація та збір ключів (оптимізація)
+  // Реальні docId товарів, які записані з цього прайсу (mark-and-sweep).
+  // Звіряємо саме docId (істина), а не реконструйований рядок-ключ —
+  // інакше бренди/артикули зі спецсимволами «чергують» присутність у базі.
+  const keptDocIds = new Set();
+
+  // Крок 1: Нормалізація та збір ключів (оптимізація читань)
   const normalizedProductKeys = new Set(); // brand-article
   const rowsToProcess = []; // Зберігаємо нормалізовані дані для обробки
 
@@ -243,7 +248,7 @@ async function processAndSaveProducts(rows, supplier) {
       const productId = masterData?.id || rawId;
       
       if (masterData) {
-        await upsertProduct({
+        const docId = await upsertProduct({
           supplier: supplierNorm,
           brand: normalizedBrand,
           id: productId,
@@ -255,15 +260,14 @@ async function processAndSaveProducts(rows, supplier) {
           tolerances: masterData.tolerances || null,
           synonyms: masterData.synonyms || [],
         });
+        keptDocIds.add(docId);
 
         // Якщо артикул у CSV є синонімом канонічного (productId !== article):
-        // 1. Додаємо canonical ключ у normalizedProductKeys, щоб Cleanup не видалив
-        //    щойно записаний offer на canonical (бо в CSV є тільки синонімний артикул).
-        // 2. Видаляємо старий offer постачальника для синонімного артикулу,
-        //    щоб не лишалось дублюючого продукту у колекції.
+        // видаляємо старий offer постачальника для синонімного артикулу,
+        // щоб не лишалось дублюючого продукту у колекції. Канонічний docId
+        // уже в keptDocIds, тож cleanup його не зачепить.
         const canonicalArticle = normalizeArticle(productId);
         if (canonicalArticle && canonicalArticle !== article) {
-          normalizedProductKeys.add(`${normalizedBrand}-${canonicalArticle}`);
           try {
             await removeProduct({ supplier: supplierNorm, id: article, brand: normalizedBrand });
           } catch (cleanupErr) {
@@ -277,7 +281,7 @@ async function processAndSaveProducts(rows, supplier) {
           }
         }
       } else {
-        await upsertProduct({
+        const docId = await upsertProduct({
           supplier: supplierNorm,
           brand: normalizedBrand,
           id: productId,
@@ -288,6 +292,7 @@ async function processAndSaveProducts(rows, supplier) {
           pack: null,
           tolerances: null,
       });
+        keptDocIds.add(docId);
       }
       ok++;
     } catch (e) {
@@ -311,16 +316,18 @@ async function processAndSaveProducts(rows, supplier) {
     supplier: supplierNorm
   });
 
-  // Cleanup: видалити пропозиції, яких немає в новому прайсі
-  // Використовуємо supplierProducts для швидкого пошуку
+  // Cleanup: видалити пропозиції, яких немає в новому прайсі.
+  // Звіряємо за реальним productDocId (а не реконструйованим ключем),
+  // тому товар, який щойно записано (keptDocIds), ніколи не видаляється.
   const supplierProductsToCheck = [];
   supplierProductsSnap.forEach(doc => {
     const data = doc.data();
-    const productKey = data.productKey;
-    
-    // Якщо товар НЕ в новому CSV - потрібно видалити пропозицію
-    if (!normalizedProductKeys.has(productKey)) {
-      supplierProductsToCheck.push({ productKey, productDocId: data.productDocId });
+    const productDocId = data.productDocId;
+    if (!productDocId) return;
+
+    // Якщо docId НЕ серед записаних з цього прайсу - видаляємо пропозицію
+    if (!keptDocIds.has(productDocId)) {
+      supplierProductsToCheck.push({ productKey: data.productKey, productDocId });
     }
   });
   

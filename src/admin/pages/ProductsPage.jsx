@@ -23,10 +23,17 @@ import {
   getImageFileFromClipboard,
 } from "../../utils/productImage";
 import { httpsCallable } from "firebase/functions";
+import { fetchProductsByBrandNames } from "../../utils/brandQuery.js";
 import { db, functions } from "../../firebase-config";
 import Tabs from "../components/Tabs.jsx";
 import { useClientSearch } from "../hooks/useClientSearch.js";
-import { offerSourceLabel } from "../../utils/cartStockWarning";
+import {
+  TOLERANCE_FILTER_PROFILES,
+  TOLERANCE_SYSTEMS,
+  buildToleranceTag,
+  formatToleranceTags,
+  normalizeToleranceTagsInput,
+} from "../../utils/tolerances.js";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -49,6 +56,14 @@ const MASTER_FIELD_OPTIONS = [
 const MASTER_FIELD_LABELS = Object.fromEntries(
   MASTER_FIELD_OPTIONS.map((field) => [field.key, field.label])
 );
+const AI_SUGGEST_FIELD_LABELS = {
+  ...MASTER_FIELD_LABELS,
+  detailBody: "Детальний опис",
+};
+
+function buildAiFieldSelection(targetFields = []) {
+  return Object.fromEntries(targetFields.map((field) => [field, true]));
+}
 
 function splitTextList(value) {
   return String(value || "")
@@ -107,8 +122,12 @@ export default function ProductsPage() {
   const [selectedBrand, setSelectedBrand] = useState(""); // ID бренду з кешу
   const [brandSearch, setBrandSearch] = useState(""); // Пошук по назві бренду
   const [articleSearch, setArticleSearch] = useState("");
-  const [selectedSupplier, setSelectedSupplier] = useState("all"); // Клієнтська фільтрація
+  const [nameSearch, setNameSearch] = useState(""); // Клієнтський фільтр по назві/артикулу
+  const [selectedSupplier, setSelectedSupplier] = useState("Мій склад"); // Клієнтська фільтрація (за замовчуванням "Мій склад")
   const [priceType, setPriceType] = useState(PRICE_TYPE_INCOMING); // Цінова політика (за замовчуванням — оцінка вхідної)
+  const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('adminSelectedCurrency') || 'EUR'); // Валюта відображення
+  const [uahRate, setUahRate] = useState(null); // Курс UAH до EUR
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   
   // Клієнт та пошук
   const [selectedClient, setSelectedClient] = useState(null); // Вибраний клієнт
@@ -167,11 +186,16 @@ export default function ProductsPage() {
     categories: [],
     pack: "",
     tolerances: "",
+    toleranceTagsText: "",
     synonymsText: "",
   });
   const [loadingMasterData, setLoadingMasterData] = useState(false);
   const [savingMasterData, setSavingMasterData] = useState(false);
   const [deletingMasterData, setDeletingMasterData] = useState(false);
+  /** AI-пропозиції для master-даних (Етап 1, без автозбереження). */
+  const [aiSuggesting, setAiSuggesting] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState(null);
+  const [aiSelectedFields, setAiSelectedFields] = useState({});
   /** Детальний опис для порталу (products/{docId}/details/main). */
   const [detailBody, setDetailBody] = useState("");
   const [detailImageUrl, setDetailImageUrl] = useState("");
@@ -181,6 +205,7 @@ export default function ProductsPage() {
   const [pendingImagePreview, setPendingImagePreview] = useState("");
   const [pendingImageFile, setPendingImageFile] = useState(null);
   const [removeDetailImage, setRemoveDetailImage] = useState(false);
+  const [toleranceSearch, setToleranceSearch] = useState("");
 
   // Моніторинг заповненості master-даних
   const [masterMonitorSupplier, setMasterMonitorSupplier] = useState("Мій склад");
@@ -194,6 +219,7 @@ export default function ProductsPage() {
   // Кеш товарів по брендах/category-групах, щоб повторні кліки не робили зайві reads
   const brandCacheRef = useRef(new Map());
   const categoryGroupCacheRef = useRef(new Map());
+  const adminSwipeRef = useRef(null);
   
   // Завантаження featured products
   const loadFeaturedProducts = useCallback(async () => {
@@ -213,22 +239,42 @@ export default function ProductsPage() {
           return;
         }
         
-        // Завантажуємо повні дані товарів
         const productPromises = items.map(async (item) => {
           try {
-            // Шукаємо товар по brand та id
-            const productsQuery = query(
-              collection(db, `/artifacts/${appId}/public/data/products`),
-              where("brand", "==", item.brand),
-              where("id", "==", item.id),
-              limit(1)
-            );
-            const productSnap = await getDocs(productsQuery);
-            if (!productSnap.empty) {
-              const productDoc = productSnap.docs[0];
-              return { docId: productDoc.id, ...productDoc.data() };
+            let docId = item.docId || null;
+            let data = null;
+
+            if (docId) {
+              const snap = await getDoc(
+                doc(db, `/artifacts/${appId}/public/data/products/${docId}`)
+              );
+              if (snap.exists()) data = snap.data();
             }
-            return null;
+
+            if (!data) {
+              const productsQuery = query(
+                collection(db, `/artifacts/${appId}/public/data/products`),
+                where("brand", "==", item.brand),
+                where("id", "==", item.id),
+                limit(1)
+              );
+              const productSnap = await getDocs(productsQuery);
+              if (productSnap.empty) return null;
+              docId = productSnap.docs[0].id;
+              data = productSnap.docs[0].data();
+            }
+
+            const detailsSnap = await getDoc(
+              doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`)
+            );
+            const details = detailsSnap.exists() ? detailsSnap.data() || {} : {};
+
+            return {
+              docId,
+              ...data,
+              imageThumbUrl: details.imageThumbUrl || "",
+              imageUrl: details.imageUrl || "",
+            };
           } catch (e) {
             console.warn("Failed to load featured product", item.brand, item.id, e);
             return null;
@@ -297,7 +343,10 @@ export default function ProductsPage() {
           collection(db, `/artifacts/${appId}/public/meta/brands`)
         );
         const brands = snap.docs
-          .map(d => ({ id: d.id, name: d.data().name }))
+          .map(d => {
+            const data = d.data() || {};
+            return { id: d.id, name: data.name, variants: data.variants || [] };
+          })
           .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
         setBrandsList(brands);
       } catch (e) {
@@ -402,6 +451,27 @@ export default function ProductsPage() {
     loadCategories();
   }, []);
 
+  // Збереження вибраної валюти в localStorage
+  useEffect(() => {
+    localStorage.setItem('adminSelectedCurrency', selectedCurrency);
+  }, [selectedCurrency]);
+
+  // Завантаження курсу валют
+  useEffect(() => {
+    const loadCurrencyRate = async () => {
+      try {
+        const getCurrencyRate = httpsCallable(functions, 'getCurrencyRate');
+        const rateResult = await getCurrencyRate();
+        if (rateResult.data?.rate) {
+          setUahRate(rateResult.data.rate);
+        }
+      } catch (e) {
+        console.warn("Не вдалося завантажити курс валют", e);
+      }
+    };
+    loadCurrencyRate();
+  }, []);
+
   // Функція нормалізації артикулу (як в shared.js)
   const normalizeArticle = (v) => {
     const s = String(v ?? "").trim().toUpperCase();
@@ -446,17 +516,22 @@ export default function ProductsPage() {
   const openMasterModal = useCallback(async (product) => {
     setMasterModalProduct(product);
     setLoadingMasterData(true);
+    setAiSuggesting(false);
+    setAiSuggestion(null);
+    setAiSelectedFields({});
     setDetailBody("");
     setDetailImageUrl("");
     setDetailImageThumbUrl("");
     setDetailImageStoragePath("");
     setDetailImageThumbStoragePath("");
+    setToleranceSearch("");
     clearDetailImageDraft();
     setMasterForm({
       correctName: product.name || "",
       categories: Array.isArray(product.categories) ? product.categories : [],
       pack: product.pack || "",
       tolerances: product.tolerances || "",
+      toleranceTagsText: formatToleranceTags(product.toleranceTags),
       synonymsText: joinTextList(product.synonyms),
     });
 
@@ -479,6 +554,7 @@ export default function ProductsPage() {
           categories: Array.isArray(md.categories) ? md.categories : [],
           pack: md.pack || "",
           tolerances: md.tolerances || "",
+          toleranceTagsText: formatToleranceTags(md.toleranceTags || product.toleranceTags),
           synonymsText: joinTextList(md.synonyms),
         });
       }
@@ -511,13 +587,140 @@ export default function ProductsPage() {
     setLoadingMasterData(false);
     setSavingMasterData(false);
     setDeletingMasterData(false);
+    setAiSuggesting(false);
+    setAiSuggestion(null);
+    setAiSelectedFields({});
     setDetailBody("");
     setDetailImageUrl("");
     setDetailImageThumbUrl("");
     setDetailImageStoragePath("");
     setDetailImageThumbStoragePath("");
+    setToleranceSearch("");
     clearDetailImageDraft();
   }, [clearDetailImageDraft]);
+
+  const handleSuggestAi = useCallback(async () => {
+    if (!masterModalProduct) return;
+
+    setAiSuggesting(true);
+    setAiSuggestion(null);
+    setAiSelectedFields({});
+    try {
+      const monitorRow = {
+        ...masterModalProduct,
+        correctName: masterForm.correctName,
+        categories: masterForm.categories,
+        pack: masterForm.pack,
+        tolerances: masterForm.tolerances,
+        synonyms: splitTextList(masterForm.synonymsText),
+      };
+      const missingFields = getMissingMasterFields(
+        monitorRow,
+        MASTER_FIELD_OPTIONS.map((field) => field.key).filter((key) => key !== "masterExists")
+      );
+
+      const call = httpsCallable(functions, "suggestProductEnrichment");
+      const { data } = await call({
+        productDocId: masterModalProduct.docId,
+        brand: masterModalProduct.brand,
+        id: masterModalProduct.id,
+        missingFields,
+        includeDetailBody: !detailBody.trim(),
+      });
+
+      const targetFields = Array.isArray(data?.targetFields) ? data.targetFields : [];
+      setAiSuggestion(data || null);
+      setAiSelectedFields(buildAiFieldSelection(targetFields));
+
+      if (!targetFields.length) {
+        setStatusMessage({
+          type: "success",
+          text: data?.notes || "Усі обрані поля вже заповнені.",
+        });
+      }
+    } catch (e) {
+      console.error("Помилка AI-пропозиції", e);
+      setStatusMessage({
+        type: "error",
+        text: e?.message || "Не вдалося отримати AI-пропозицію",
+      });
+    } finally {
+      setAiSuggesting(false);
+    }
+  }, [masterModalProduct, masterForm, detailBody]);
+
+  const toggleAiSelectedField = useCallback((field) => {
+    setAiSelectedFields((prev) => ({
+      ...prev,
+      [field]: !prev[field],
+    }));
+  }, []);
+
+  const applyAiSuggestion = useCallback(
+    (fieldsToApply) => {
+      if (!aiSuggestion?.suggestion) return;
+      const suggestion = aiSuggestion.suggestion;
+
+      if (fieldsToApply.correctName && suggestion.correctName) {
+        setMasterForm((prev) => ({
+          ...prev,
+          correctName: prev.correctName.trim() ? prev.correctName : suggestion.correctName,
+        }));
+      }
+      if (fieldsToApply.categories && Array.isArray(suggestion.categories) && suggestion.categories.length) {
+        setMasterForm((prev) => ({
+          ...prev,
+          categories: prev.categories.length ? prev.categories : suggestion.categories,
+        }));
+      }
+      if (fieldsToApply.pack && suggestion.pack) {
+        setMasterForm((prev) => ({
+          ...prev,
+          pack: prev.pack.trim() ? prev.pack : suggestion.pack,
+        }));
+      }
+      if (fieldsToApply.tolerances && suggestion.tolerances) {
+        setMasterForm((prev) => ({
+          ...prev,
+          tolerances: prev.tolerances.trim() ? prev.tolerances : suggestion.tolerances,
+          toleranceTagsText: prev.toleranceTagsText.trim()
+            ? prev.toleranceTagsText
+            : formatToleranceTags(suggestion.toleranceTags),
+        }));
+      }
+      if (fieldsToApply.synonyms && Array.isArray(suggestion.synonyms) && suggestion.synonyms.length) {
+        setMasterForm((prev) => ({
+          ...prev,
+          synonymsText: splitTextList(prev.synonymsText).length
+            ? prev.synonymsText
+            : joinTextList(suggestion.synonyms),
+        }));
+      }
+      if (fieldsToApply.detailBody && suggestion.detailBody && !detailBody.trim()) {
+        setDetailBody(suggestion.detailBody);
+      }
+
+      setStatusMessage({ type: "success", text: "AI-пропозицію застосовано до форми. Перевірте та натисніть «Зберегти»." });
+      setAiSuggestion(null);
+      setAiSelectedFields({});
+    },
+    [aiSuggestion, detailBody]
+  );
+
+  const handleApplyAllAiSuggestion = useCallback(() => {
+    applyAiSuggestion(aiSelectedFields);
+  }, [applyAiSuggestion, aiSelectedFields]);
+
+  const handleApplySelectedAiSuggestion = useCallback(() => {
+    const selected = Object.fromEntries(
+      Object.entries(aiSelectedFields).filter(([, checked]) => checked)
+    );
+    if (!Object.keys(selected).length) {
+      setStatusMessage({ type: "error", text: "Оберіть хоча б одне поле для застосування." });
+      return;
+    }
+    applyAiSuggestion(selected);
+  }, [applyAiSuggestion, aiSelectedFields]);
 
   const applyDetailImageFile = useCallback((file) => {
     if (!file) return;
@@ -555,12 +758,87 @@ export default function ProductsPage() {
     [applyDetailImageFile]
   );
 
+  const selectedToleranceTags = useMemo(
+    () => normalizeToleranceTagsInput(masterForm.toleranceTagsText),
+    [masterForm.toleranceTagsText]
+  );
+
+  const selectedToleranceTagSet = useMemo(
+    () => new Set(selectedToleranceTags),
+    [selectedToleranceTags]
+  );
+
+  const toleranceSystemOrder = useMemo(() => {
+    const preferred = [];
+    masterForm.categories.forEach((category) => {
+      const profile = TOLERANCE_FILTER_PROFILES[category];
+      if (Array.isArray(profile)) preferred.push(...profile);
+    });
+    const allSystems = Object.keys(TOLERANCE_SYSTEMS);
+    const ordered = [...new Set([...preferred, ...allSystems])];
+    return ordered.filter((system) => TOLERANCE_SYSTEMS[system]);
+  }, [masterForm.categories]);
+
+  const visibleToleranceSystems = useMemo(() => {
+    const q = toleranceSearch.trim().toUpperCase();
+    return toleranceSystemOrder
+      .map((system) => {
+        const cfg = TOLERANCE_SYSTEMS[system];
+        const options = cfg.options
+          .map((code) => ({ code, tag: buildToleranceTag(system, code) }))
+          .filter(({ code, tag }) =>
+            !q ||
+            system.includes(q) ||
+            String(cfg.label || "").toUpperCase().includes(q) ||
+            code.toUpperCase().includes(q) ||
+            tag.includes(q)
+          );
+        return { system, ...cfg, options };
+      })
+      .filter((cfg) => cfg.options.length > 0);
+  }, [toleranceSearch, toleranceSystemOrder]);
+
   const handleRemoveDetailImage = useCallback(() => {
     clearDetailImageDraft();
     setRemoveDetailImage(true);
     setDetailImageUrl("");
     setDetailImageThumbUrl("");
   }, [clearDetailImageDraft]);
+
+  const setToleranceTags = useCallback((tags) => {
+    setMasterForm((prev) => ({
+      ...prev,
+      toleranceTagsText: formatToleranceTags(normalizeToleranceTagsInput(tags)),
+    }));
+  }, []);
+
+  const toggleToleranceTag = useCallback((tag) => {
+    setMasterForm((prev) => {
+      const tags = normalizeToleranceTagsInput(prev.toleranceTagsText);
+      const next = new Set(tags);
+      if (next.has(tag)) {
+        next.delete(tag);
+      } else {
+        next.add(tag);
+      }
+      return {
+        ...prev,
+        toleranceTagsText: formatToleranceTags(Array.from(next)),
+      };
+    });
+  }, []);
+
+  const handleCopyToleranceTags = useCallback(async () => {
+    const text = formatToleranceTags(selectedToleranceTags);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatusMessage({ type: "success", text: "Масив допусків скопійовано." });
+    } catch (e) {
+      console.warn("Clipboard copy failed", e);
+      setStatusMessage({ type: "error", text: "Не вдалося скопіювати допуски." });
+    }
+  }, [selectedToleranceTags]);
 
   const handleSaveMasterData = useCallback(async () => {
     if (!masterModalProduct) return;
@@ -576,6 +854,7 @@ export default function ProductsPage() {
         categories: masterForm.categories,
         pack: masterForm.pack,
         tolerances: masterForm.tolerances,
+        toleranceTags: normalizeToleranceTagsInput(masterForm.toleranceTagsText),
         synonyms: splitTextList(masterForm.synonymsText),
       });
 
@@ -584,6 +863,7 @@ export default function ProductsPage() {
         categories: masterForm.categories,
         pack: masterForm.pack,
         tolerances: masterForm.tolerances,
+        toleranceTags: normalizeToleranceTagsInput(masterForm.toleranceTagsText),
         synonyms: splitTextList(masterForm.synonymsText),
       };
       applyProductPatch(masterModalProduct.docId, productPatch);
@@ -788,6 +1068,7 @@ export default function ProductsPage() {
       categories: Array.isArray(row.categories) ? row.categories : [],
       pack: row.pack || "",
       tolerances: row.tolerances || "",
+      toleranceTags: Array.isArray(row.toleranceTags) ? row.toleranceTags : [],
       synonyms: Array.isArray(row.synonyms) ? row.synonyms : [],
     });
   }, [openMasterModal]);
@@ -920,17 +1201,31 @@ export default function ProductsPage() {
     // 5. Округлення в більшу сторону до сотих
     let finalPrice = Math.ceil(price * 100) / 100;
     
+    // 6. Конвертація валюти
+    if (selectedCurrency === 'UAH' && uahRate && uahRate > 0) {
+      finalPrice = Math.round(finalPrice * uahRate * 100) / 100;
+    }
+    
     return finalPrice;
-  }, [selectedClient, priceType, clientPricingRules, findRule]);
+  }, [selectedClient, priceType, clientPricingRules, findRule, selectedCurrency, uahRate]);
 
   // Функція для отримання ціни з publicPrices за обраною політикою
   const getPrice = useCallback((publicPrices, supplier) => {
     if (!publicPrices || typeof publicPrices !== "object") return null;
+    let price;
     if (priceType === PRICE_TYPE_INCOMING) {
-      return estimateIncomingFromRetail(publicPrices);
+      price = estimateIncomingFromRetail(publicPrices);
+    } else {
+      price = publicPrices[priceType] ?? null;
     }
-    return publicPrices[priceType] ?? null;
-  }, [priceType]);
+    
+    // Конвертація валюти
+    if (price && selectedCurrency === 'UAH' && uahRate && uahRate > 0) {
+      price = Math.round(price * uahRate * 100) / 100;
+    }
+    
+    return price;
+  }, [priceType, selectedCurrency, uahRate]);
 
   // Функції для модалки замовлення
   const openOrderModal = useCallback((product, offer) => {
@@ -1116,21 +1411,19 @@ export default function ProductsPage() {
         return;
       }
       
-      const baseRef = collection(db, `/artifacts/${appId}/public/data/products`);
-      const clauses = [];
-      
-      // Фільтр по бренду (серверний)
-          const brandObj = brandsList.find(b => b.id === selectedBrand);
-          if (brandObj && brandObj.name) {
-            clauses.push(where("brand", "==", brandObj.name));
+      const brandObj = brandsList.find(b => b.id === selectedBrand);
+      if (!brandObj?.name) {
+        setProducts([]);
+        setLoading(false);
+        return;
       }
-      
-      clauses.push(orderBy("brand"));
-      clauses.push(orderBy("name"));
 
-      const q = query(baseRef, ...clauses);
-      const snap = await getDocs(q);
-      const docs = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+      const { items: docs } = await fetchProductsByBrandNames(
+        db,
+        appId,
+        [brandObj.name, ...(brandObj.variants || [])],
+        { pageSize: 500 }
+      );
       
       // Зберігаємо в кеш
       brandCacheRef.current.set(selectedBrand, { products: docs });
@@ -1160,12 +1453,18 @@ export default function ProductsPage() {
     }
     
     const rows = [];
+    const nameQ = nameSearch.trim().toLowerCase();
     
     for (const product of products) {
       if (!product.offers || !Array.isArray(product.offers)) {
-        // Якщо немає offers - пропускаємо товар
         continue;
       }
+
+      // Фільтр по назві/артикулу (клієнтський)
+      if (nameQ &&
+        !String(product.name || "").toLowerCase().includes(nameQ) &&
+        !String(product.id || "").toLowerCase().includes(nameQ)
+      ) continue;
       
       // Фільтрація по постачальнику (клієнтська)
       let filteredOffers = product.offers;
@@ -1217,7 +1516,7 @@ export default function ProductsPage() {
     }
     
     setDisplayRows(rows);
-  }, [products, selectedSupplier, getPrice, selectedClient, clientPricingRules, calculatePriceWithRules]);
+  }, [products, selectedSupplier, nameSearch, getPrice, selectedClient, clientPricingRules, calculatePriceWithRules]);
 
   // Очищення фільтрів
   const handleClear = () => {
@@ -1226,6 +1525,7 @@ export default function ProductsPage() {
     setExpandedGroup(null);
     setBrandSearch("");
     setArticleSearch("");
+    setNameSearch("");
     setSelectedSupplier("all");
     setProducts([]);
     setDisplayRows([]);
@@ -1257,6 +1557,7 @@ export default function ProductsPage() {
             categories: row.categories,
             pack: row.pack,
             tolerances: row.tolerances,
+            toleranceTags: row.toleranceTags,
             synonyms: row.synonyms,
           },
           offers: [row],
@@ -1332,7 +1633,8 @@ export default function ProductsPage() {
         <div>
           <div className="mb-4">
             <p className="text-sm text-gray-600">
-              Тут відображаються рекомендовані товари, які показуються на порталі клієнта.
+              Тут відображаються рекомендовані товари, які на порталі показуються як картки з фото.
+              Фото береться з детального опису товару (вкладка каталогу → «i» / опис).
             </p>
           </div>
           
@@ -1347,6 +1649,7 @@ export default function ProductsPage() {
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50">
                   <tr>
+                    <th className="px-3 py-2 text-left w-16">Фото</th>
                     <th className="px-3 py-2 text-left">Бренд</th>
                     <th className="px-3 py-2 text-left">Артикул</th>
                     <th className="px-3 py-2 text-left">Назва</th>
@@ -1357,6 +1660,18 @@ export default function ProductsPage() {
                 <tbody>
                   {featuredProductsData.map((product) => (
                     <tr key={`${product.brand}-${product.id}`} className="border-t">
+                      <td className="px-3 py-2">
+                        {product.imageThumbUrl || product.imageUrl ? (
+                          <img
+                            src={product.imageThumbUrl || product.imageUrl}
+                            alt=""
+                            className="w-12 h-12 object-contain rounded border bg-gray-50"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <span className="text-xs text-gray-400">немає</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 whitespace-nowrap">{product.brand}</td>
                       <td className="px-3 py-2 whitespace-nowrap">{product.id}</td>
                       <td className="px-3 py-2">{product.name}</td>
@@ -1542,9 +1857,56 @@ export default function ProductsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-12 gap-4">
+
+        {/* FAB «Каталог» — тільки на мобільних */}
+        <button
+          type="button"
+          aria-label="Відкрити каталог"
+          className="fixed left-0 top-1/2 -translate-y-1/2 z-40 flex md:hidden flex-col items-center justify-center gap-1.5 rounded-r-2xl border border-white/30 bg-indigo-600 py-3 pl-2.5 pr-2.5 text-white shadow-lg active:bg-indigo-700 min-h-[44px]"
+          onClick={() => setMobileSidebarOpen(true)}
+        >
+          <span className="flex flex-col gap-0.5" aria-hidden>
+            <span className="h-1 w-1 rounded-full bg-white" />
+            <span className="h-1 w-1 rounded-full bg-white" />
+            <span className="h-1 w-1 rounded-full bg-white" />
+          </span>
+          <span
+            className="text-[11px] font-semibold uppercase tracking-wide text-white/95"
+            style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+          >
+            Каталог
+          </span>
+        </button>
+
+        {/* Overlay для мобільного drawer */}
+        {mobileSidebarOpen && (
+          <button
+            type="button"
+            aria-label="Закрити меню"
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+        )}
+
         {/* Бічна панель з пошуком по бренду */}
-        <aside className="col-span-12 md:col-span-3">
-          <div className="bg-white border rounded-lg shadow-sm p-4">
+        <aside className={`
+          fixed inset-y-0 left-0 z-50 flex flex-col w-[min(90vw,20rem)] bg-white shadow-xl transition-transform duration-200 ease-out py-3 px-3
+          md:relative md:inset-auto md:z-auto md:col-span-3 md:w-auto md:translate-x-0 md:bg-transparent md:p-0 md:shadow-none
+          ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        `}>
+          {/* Заголовок drawer (тільки mobile) */}
+          <div className="flex items-center justify-between mb-2 pb-2 border-b md:hidden">
+            <span className="text-sm font-semibold text-gray-900">Вибір каталогу</span>
+            <button
+              type="button"
+              className="rounded-lg px-2 py-1 text-lg leading-none text-gray-600 hover:bg-gray-100"
+              onClick={() => setMobileSidebarOpen(false)}
+              aria-label="Закрити"
+            >
+              ×
+            </button>
+          </div>
+          <div className="bg-white border rounded-lg shadow-sm p-4 flex-1 overflow-y-auto md:overflow-visible">
             {/* Тумблер режимів */}
             <div className="flex gap-1 mb-2">
               <button
@@ -1745,7 +2107,29 @@ export default function ProductsPage() {
         </aside>
 
         {/* Основний контент */}
-        <section className="col-span-12 md:col-span-9">
+        <section
+          className="col-span-12 md:col-span-9"
+          onTouchStart={(e) => {
+            if (mobileSidebarOpen) return;
+            if (window.matchMedia('(min-width: 768px)').matches) return;
+            if (e.touches.length !== 1) return;
+            const t = e.touches[0];
+            if (t.clientX > 40) return;
+            adminSwipeRef.current = { x0: t.clientX, y0: t.clientY };
+          }}
+          onTouchEnd={(e) => {
+            const st = adminSwipeRef.current;
+            adminSwipeRef.current = null;
+            if (!st || mobileSidebarOpen) return;
+            if (window.matchMedia('(min-width: 768px)').matches) return;
+            if (e.changedTouches.length !== 1) return;
+            const t = e.changedTouches[0];
+            const dx = t.clientX - st.x0;
+            const dy = Math.abs(t.clientY - st.y0);
+            if (dx > 40 && dy < dx * 1.2) setMobileSidebarOpen(true);
+          }}
+          onTouchCancel={() => { adminSwipeRef.current = null; }}
+        >
           {/* Фільтри та пошук */}
           <div className="flex flex-wrap gap-2 items-center mb-4">
             {/* Пошук клієнта */}
@@ -1813,13 +2197,21 @@ export default function ProductsPage() {
 
             {/* Пошук по артикулу */}
             <input
-              className="border rounded px-3 py-2 flex-1 min-w-[200px]"
+              className="border rounded px-3 py-2 flex-1 min-w-[160px]"
               placeholder="Пошук по артикулу"
               value={articleSearch}
               onChange={(e) => setArticleSearch(e.target.value)}
               onKeyPress={(e) => {
                 if (e.key === "Enter") handleSearch();
               }}
+            />
+
+            {/* Фільтр по назві товару (client-side, без запиту) */}
+            <input
+              className="border rounded px-3 py-2 flex-1 min-w-[160px]"
+              placeholder="Фільтр по назві…"
+              value={nameSearch}
+              onChange={(e) => setNameSearch(e.target.value)}
             />
 
             {/* Фільтр по постачальнику (клієнтська дорізка) */}
@@ -1850,6 +2242,16 @@ export default function ProductsPage() {
               <option value="ціна опт">Ціна опт</option>
             </select>
 
+            {/* Вибір валюти */}
+            <select
+              className="border rounded px-3 py-2"
+              value={selectedCurrency}
+              onChange={(e) => setSelectedCurrency(e.target.value)}
+            >
+              <option value="EUR">€ EUR</option>
+              <option value="UAH">₴ UAH</option>
+            </select>
+
             {/* Кнопки */}
             <button
               className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
@@ -1872,15 +2274,103 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          {/* Таблиця результатів */}
-          <div className="overflow-auto border rounded-xl">
+          {/* Мобільний card-view (тільки < sm) */}
+          <div className="flex flex-col gap-2 sm:hidden">
+            {loading && (
+              <div className="py-8 text-center text-gray-500 text-sm">Завантаження…</div>
+            )}
+            {!loading && groupedRows.length === 0 && (
+              <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-gray-300 rounded-xl">
+                {products.length === 0
+                  ? "Натисніть «Пошук» для завантаження товарів"
+                  : "Немає даних за обраними фільтрами"}
+              </div>
+            )}
+            {groupedRows.map((group) => (
+              <div key={group.key} className="bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
+                {/* Заголовок товару */}
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-sm text-gray-900 leading-snug break-words">
+                      {group.product.name || '—'}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {group.product.brand} · {group.product.id}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button
+                      onClick={() => {
+                        if (isFeatured(group.product.brand, group.product.id)) {
+                          handleRemoveFeatured(group.product.brand, group.product.id);
+                        } else {
+                          handleAddFeatured(group.product.brand, group.product.id);
+                        }
+                      }}
+                      className={`p-1.5 rounded text-sm transition-colors ${
+                        isFeatured(group.product.brand, group.product.id)
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}
+                      title={isFeatured(group.product.brand, group.product.id) ? 'Видалити з рекомендованих' : 'Додати до рекомендованих'}
+                    >
+                      📌
+                    </button>
+                    <button
+                      onClick={() => openMasterModal(group.product)}
+                      className="p-1.5 rounded text-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                      title="Редагувати master-дані"
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                </div>
+                {/* Пропозиції постачальників */}
+                {group.offers.map((row, i) => {
+                  let price;
+                  if (selectedClient && clientPricingRules) {
+                    price = calculatePriceWithRules({ brand: row.brand, id: row.id, name: row.name }, { supplier: row.supplier, publicPrices: row.publicPrices });
+                  } else {
+                    price = getPrice(row.publicPrices, row.supplier);
+                  }
+                  const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
+                  const priceText = price != null ? (typeof price === 'number' ? `${price.toFixed(2)} ${currencySymbol}` : String(price)) : '—';
+                  return (
+                    <div key={i} className="mt-2 flex items-center justify-between gap-2 border-t border-gray-100 pt-2 text-sm">
+                      <div className="min-w-0">
+                        <span className={`text-xs font-medium ${row.supplier === 'Мій склад' ? 'text-green-600' : 'text-gray-500'}`}>
+                          {row.supplier}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs text-gray-500">
+                          Нал: <b className={row.stock > 0 ? 'text-gray-800' : 'text-orange-500'}>{row.stock > 0 ? row.stock : 'немає'}</b>
+                        </span>
+                        <span className="font-semibold text-sm">{priceText}</span>
+                        <button
+                          onClick={() => openOrderModal(group.product, row)}
+                          className="p-1.5 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
+                          title="Створити замовлення"
+                        >
+                          🛒
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Десктоп таблиця (hidden на mobile) */}
+          <div className="hidden sm:block overflow-auto border rounded-xl">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
               <th className="px-3 py-2 text-left">Бренд</th>
               <th className="px-3 py-2 text-left">Артикул</th>
               <th className="px-3 py-2 text-left">Назва</th>
-              <th className="px-3 py-2 text-left">Джерело</th>
+              <th className="px-3 py-2 text-left">Постачальник</th>
               <th className="px-3 py-2 text-left">Наявність</th>
               <th className="px-3 py-2 text-left">Ціна</th>
               <th className="px-3 py-2 text-left">Дії</th>
@@ -1904,7 +2394,7 @@ export default function ProductsPage() {
                       </td>
                     </>
                   )}
-                  <td className="px-3 py-2 whitespace-nowrap">{offerSourceLabel(row.supplier)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{row.supplier}</td>
                   <td className="px-3 py-2 whitespace-nowrap">{row.stock}</td>
                   <td className="px-3 py-2 whitespace-nowrap">
                     {(() => {
@@ -1924,9 +2414,10 @@ export default function ProductsPage() {
                         price = getPrice(row.publicPrices, row.supplier);
                       }
                       
+                      const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
                       return price !== null && price !== undefined
                         ? typeof price === "number"
-                          ? price.toFixed(2)
+                          ? `${price.toFixed(2)} ${currencySymbol}`
                           : String(price)
                         : "—";
                     })()}
@@ -1993,7 +2484,7 @@ export default function ProductsPage() {
             )}
           </tbody>
         </table>
-          </div>
+          </div>{/* /desktop table wrapper */}
         </section>
       </div>
       )}
@@ -2006,20 +2497,36 @@ export default function ProductsPage() {
             onClick={savingMasterData || deletingMasterData ? undefined : closeMasterModal}
           />
           <div className="relative bg-white rounded-2xl shadow-xl w-[min(720px,96vw)] max-h-[90vh] overflow-auto">
-            <div className="px-5 py-3 border-b flex items-center justify-between">
+            <div className="px-5 py-3 border-b flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-semibold">Редагування master-даних</h3>
                 <p className="text-xs text-slate-500">
                   Brand та id не змінюються, щоб не ламати ідентифікацію товару.
                 </p>
               </div>
-              <button
-                className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-sm disabled:opacity-60"
-                onClick={closeMasterModal}
-                disabled={savingMasterData || deletingMasterData}
-              >
-                Закрити
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-lg bg-violet-50 hover:bg-violet-100 text-violet-800 text-sm border border-violet-200 disabled:opacity-60"
+                  onClick={handleSuggestAi}
+                  disabled={
+                    loadingMasterData ||
+                    savingMasterData ||
+                    deletingMasterData ||
+                    aiSuggesting
+                  }
+                  title="Запропонувати заповнення через Gemini (без автозбереження)"
+                >
+                  {aiSuggesting ? "AI думає…" : "✨ Запропонувати AI"}
+                </button>
+                <button
+                  className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-sm disabled:opacity-60"
+                  onClick={closeMasterModal}
+                  disabled={savingMasterData || deletingMasterData}
+                >
+                  Закрити
+                </button>
+              </div>
             </div>
 
             <div className="p-5 space-y-4 text-sm">
@@ -2041,6 +2548,103 @@ export default function ProductsPage() {
                   />
                 </div>
               </div>
+
+              {aiSuggestion?.targetFields?.length > 0 && (
+                <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-4 space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-semibold text-violet-900">
+                        AI-пропозиція
+                      </h4>
+                      <p className="text-xs text-violet-700 mt-0.5">
+                        Перевірте дані перед збереженням. Модель: {aiSuggestion.model || "Gemini"}
+                        {aiSuggestion.tokensUsed ? ` · ~${aiSuggestion.tokensUsed} tok` : ""}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="text-xs text-violet-700 hover:text-violet-900 underline"
+                      onClick={() => {
+                        setAiSuggestion(null);
+                        setAiSelectedFields({});
+                      }}
+                    >
+                      Відхилити
+                    </button>
+                  </div>
+
+                  {aiSuggestion.notes ? (
+                    <p className="text-xs text-violet-800 bg-white/70 rounded-lg px-3 py-2 border border-violet-100">
+                      {aiSuggestion.notes}
+                    </p>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    {aiSuggestion.targetFields.map((field) => {
+                      const proposed = aiSuggestion.suggestion?.[field];
+                      const current =
+                        field === "detailBody"
+                          ? detailBody
+                          : field === "categories"
+                            ? masterForm.categories.join(", ")
+                            : field === "synonyms"
+                              ? masterForm.synonymsText
+                              : masterForm[field] ?? "";
+                      const proposedText = Array.isArray(proposed)
+                        ? proposed.join(", ")
+                        : String(proposed ?? "");
+                      if (!proposedText.trim()) return null;
+                      const confidence = aiSuggestion.confidence?.[field];
+                      return (
+                        <label
+                          key={field}
+                          className="flex gap-3 rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={Boolean(aiSelectedFields[field])}
+                            onChange={() => toggleAiSelectedField(field)}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium text-slate-800">
+                              {AI_SUGGEST_FIELD_LABELS[field] || field}
+                              {confidence != null && (
+                                <span className="ml-2 text-slate-500">
+                                  ({Math.round(confidence * 100)}%)
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-slate-500 mt-1">
+                              Зараз: {String(current || "—").slice(0, 120) || "—"}
+                            </div>
+                            <div className="text-violet-900 mt-1 whitespace-pre-wrap break-words">
+                              Пропозиція: {proposedText}
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex flex-wrap justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 rounded-lg bg-white hover:bg-violet-100 text-violet-800 text-sm border border-violet-200"
+                      onClick={handleApplySelectedAiSuggestion}
+                    >
+                      Застосувати вибране
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm"
+                      onClick={handleApplyAllAiSuggestion}
+                    >
+                      Застосувати все
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {loadingMasterData ? (
                 <div className="py-8 text-center text-slate-500">
@@ -2107,6 +2711,7 @@ export default function ProductsPage() {
                       <label className="block text-xs text-slate-600 mb-1">Фасування / pack</label>
                       <input
                         className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="літри: 4 або 0.2"
                         value={masterForm.pack}
                         onChange={(e) =>
                           setMasterForm((prev) => ({
@@ -2116,10 +2721,15 @@ export default function ProductsPage() {
                         }
                       />
                     </div>
+                  </div>
+
+                  <div className="border-t border-slate-200 pt-4 space-y-3">
                     <div>
-                      <label className="block text-xs text-slate-600 mb-1">Допуски / tolerances</label>
-                      <input
-                        className="w-full px-3 py-2 border rounded-lg"
+                      <label className="block text-xs text-slate-600 mb-1">
+                        Допуски / tolerances (текст для картки)
+                      </label>
+                      <textarea
+                        className="w-full px-3 py-2 border rounded-lg min-h-[76px] text-sm"
                         value={masterForm.tolerances}
                         onChange={(e) =>
                           setMasterForm((prev) => ({
@@ -2127,7 +2737,111 @@ export default function ProductsPage() {
                             tolerances: e.target.value,
                           }))
                         }
+                        placeholder="Напр.: ACEA C3, API SP, MB 229.52, VW 504.00/507.00"
                       />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Це поле показується людині. Для фільтрів нижче формується масив
+                        <code className="mx-1 rounded bg-slate-100 px-1">toleranceTags</code>.
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-slate-800">Стандартні допуски</div>
+                          <div className="text-xs text-slate-500">
+                            Оберіть галочками або вставте готовий рядок тегів нижче.
+                          </div>
+                        </div>
+                        <input
+                          className="w-full sm:w-64 px-3 py-2 border rounded-lg bg-white text-sm"
+                          value={toleranceSearch}
+                          onChange={(e) => setToleranceSearch(e.target.value)}
+                          placeholder="Пошук: C3, 229.52, VW..."
+                        />
+                      </div>
+
+                      <div className="max-h-64 overflow-auto space-y-3 pr-1">
+                        {visibleToleranceSystems.map((cfg) => (
+                          <div key={cfg.system} className="rounded-lg border bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <div className="text-xs font-semibold text-slate-700">
+                                {cfg.label || cfg.system}
+                              </div>
+                              <div className="text-[11px] text-slate-400">{cfg.system}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {cfg.options.map(({ code, tag }) => {
+                                const checked = selectedToleranceTagSet.has(tag);
+                                return (
+                                  <label
+                                    key={tag}
+                                    className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs cursor-pointer ${
+                                      checked
+                                        ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                        : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-3 w-3"
+                                      checked={checked}
+                                      onChange={() => toggleToleranceTag(tag)}
+                                    />
+                                    <span>{code}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        {!visibleToleranceSystems.length && (
+                          <div className="rounded-lg border bg-white p-4 text-center text-sm text-slate-500">
+                            Нічого не знайдено за цим запитом.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label className="text-xs text-slate-600">
+                            Масив допусків для копіювання / вставки
+                          </label>
+                          <button
+                            type="button"
+                            className="rounded bg-white px-2 py-1 text-xs text-indigo-700 border border-indigo-100 hover:bg-indigo-50 disabled:opacity-50"
+                            onClick={handleCopyToleranceTags}
+                            disabled={!selectedToleranceTags.length}
+                          >
+                            Скопіювати
+                          </button>
+                        </div>
+                        <textarea
+                          className="w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
+                          value={masterForm.toleranceTagsText}
+                          onChange={(e) =>
+                            setMasterForm((prev) => ({
+                              ...prev,
+                              toleranceTagsText: e.target.value,
+                            }))
+                          }
+                          onBlur={() => setToleranceTags(masterForm.toleranceTagsText)}
+                          placeholder="ACEA:C3, API:SP, MB:229.52"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {selectedToleranceTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-indigo-700 text-[11px] font-medium"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {!selectedToleranceTags.length && (
+                            <span className="text-xs text-slate-400">Допуски для фільтра ще не обрано.</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
 

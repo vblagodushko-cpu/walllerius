@@ -9,6 +9,7 @@ import { httpsCallable } from 'firebase/functions';
 import './index.css';
 import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
+import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
 import { logger } from './utils/logger.js';
@@ -18,7 +19,24 @@ import {
   buildStockWarningLines,
   confirmStockOverOrder,
   warehouseStockFromProductDoc,
+  WAREHOUSE_SUPPLIER,
 } from './utils/cartStockWarning.js';
+
+const FEATURED_GROUP_ID = '__featured__';
+
+/** Нові пропозиції: лише товари з залишком > 0 на «Мій склад». */
+function filterFeaturedWithWarehouseStock(products) {
+  return (products || [])
+    .map((product) => {
+      const warehouseOffer = (product.offers || []).find(
+        (o) => o.supplier === WAREHOUSE_SUPPLIER
+      );
+      if (!warehouseOffer || Number(warehouseOffer.stock) <= 0) return null;
+      return { ...product, bestOffer: warehouseOffer };
+    })
+    .filter(Boolean);
+}
+import { findBrandMeta, fetchProductsByBrandNames } from './utils/brandQuery.js';
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -524,6 +542,23 @@ function PortalApp() {
   const [allBrands, setAllBrands] = useState([]); // [{id, name}] з meta/brands
   const [categories, setCategories] = useState([]); // [{id, name, slug, order}]
 
+  // Сайдбар: базові групи + «Нові пропозиції» внизу (useMemo — без race з ініціалізацією)
+  const sidebarProductGroups = useMemo(() => {
+    const base = productGroups.filter((g) => g.id !== FEATURED_GROUP_ID);
+    if (showFeatured && featuredProductsData.length > 0) {
+      return [
+        ...base,
+        {
+          id: FEATURED_GROUP_ID,
+          name: 'Нові пропозиції',
+          groupType: 'featured',
+          order: 99999,
+        },
+      ];
+    }
+    return base;
+  }, [productGroups, showFeatured, featuredProductsData.length]);
+
   // Фільтри для відображення товарів (клієнтська дорізка)
   const [showOnlyInStock, setShowOnlyInStock] = useState(() => {
     const saved = localStorage.getItem('showOnlyInStock');
@@ -588,26 +623,15 @@ function PortalApp() {
         }
 
     try {
-      const baseCol = collection(db, `/artifacts/${appId}/public/data/products`);
+      const brandMeta = findBrandMeta(allBrands, brandName);
       const PAGE_SIZE = 150;
-      const clauses = [
-        where('brand', '==', brandName),
-        orderBy('brand'),
-        orderBy('name'),
-        limit(PAGE_SIZE)
-      ];
+      const { items, lastDoc: newLastDoc, hasMore: newHasMore } = await fetchProductsByBrandNames(
+        db,
+        appId,
+        brandMeta ? [brandMeta.name, ...(brandMeta.variants || [])] : [brandName],
+        { pageSize: PAGE_SIZE, lastDocSnap: loadMore ? lastDocSnap : null, loadMore }
+      );
     
-      if (loadMore && lastDocSnap) {
-        clauses.push(startAfter(lastDocSnap));
-      }
-
-    const q = query(baseCol, ...clauses);
-    const snap = await getDocs(q);
-    const items = snap.docs.map(d => ({ docId: d.id, ...d.data() }));
-    
-      const newLastDoc = snap.docs.at(-1) || null;
-      const newHasMore = snap.size === PAGE_SIZE;
-
       if (loadMore) {
         // Додаємо до існуючих
         const updatedProducts = [...products, ...items];
@@ -646,7 +670,7 @@ function PortalApp() {
       setIsFetchingProducts(false);
       setIsLoadingMore(false);
     }
-  }, [lastDocSnap]);
+  }, [lastDocSnap, allBrands]);
 
   // Завантаження товарів по category-групі (з кешуванням та пагінацією)
   const loadProductsByGroup = useCallback(async (groupId, loadMore = false) => {
@@ -881,7 +905,10 @@ function PortalApp() {
     
         // Всі бренди для режиму "Всі бренди"
         const brandsFromMeta = brandsMetaSnap.docs
-          .map(d => ({ id: d.id, name: d.data().name }))
+          .map(d => {
+            const data = d.data() || {};
+            return { id: d.id, name: data.name, variants: data.variants || [] };
+          })
           .sort((a,b) => String(a.name||'').localeCompare(String(b.name||'')));
         setAllBrands(brandsFromMeta);
       } catch (e) { logger.error(e); }
@@ -912,46 +939,65 @@ function PortalApp() {
           setFeaturedProducts(items);
           // НЕ встановлюємо showFeatured тут, бо товари ще не завантажені
           
-          // Завантажуємо повні дані товарів, зберігаючи порядок сортування
           const productPromises = items.map(async (item, index) => {
             try {
-              // Шукаємо товар по brand та id (артикул)
-              const productsQuery = query(
-                collection(db, `/artifacts/${appId}/public/data/products`),
-                where("brand", "==", item.brand),
-                where("id", "==", item.id),
-                limit(1)
-              );
-              const productSnap = await getDocs(productsQuery);
-              if (!productSnap.empty) {
-                const productDoc = productSnap.docs[0];
-                return { 
-                  docId: productDoc.id, 
-                  ...productDoc.data(), 
-                  isFeatured: true,
-                  featuredIndex: index, // Зберігаємо індекс для сортування
-                  featuredAddedAt: item.addedAt // Зберігаємо дату додавання
-                };
+              let docId = item.docId || null;
+              let data = null;
+
+              if (docId) {
+                const snap = await getDoc(
+                  doc(db, `/artifacts/${appId}/public/data/products/${docId}`)
+                );
+                if (snap.exists()) {
+                  data = snap.data();
+                }
               }
-              return null;
+
+              if (!data) {
+                const productsQuery = query(
+                  collection(db, `/artifacts/${appId}/public/data/products`),
+                  where("brand", "==", item.brand),
+                  where("id", "==", item.id),
+                  limit(1)
+                );
+                const productSnap = await getDocs(productsQuery);
+                if (productSnap.empty) return null;
+                const productDoc = productSnap.docs[0];
+                docId = productDoc.id;
+                data = productDoc.data();
+              }
+
+              const detailsSnap = await getDoc(
+                doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`)
+              );
+              const details = detailsSnap.exists() ? detailsSnap.data() || {} : {};
+
+              return {
+                docId,
+                ...data,
+                imageThumbUrl: String(details.imageThumbUrl || ""),
+                imageUrl: String(details.imageUrl || ""),
+                featuredIndex: index,
+                featuredAddedAt: item.addedAt,
+              };
             } catch (e) {
               logger.warn("Failed to load featured product", item.brand, item.id, e);
               return null;
             }
           });
           
-          const products = (await Promise.all(productPromises))
-            .filter(p => p !== null)
-            .sort((a, b) => {
-              // Сортуємо за featuredIndex (від свіжододаних)
-              return (a.featuredIndex || 0) - (b.featuredIndex || 0);
-            });
-          
-          // Встановлюємо showFeatured ТІЛЬКИ якщо є завантажені товари
+          const products = filterFeaturedWithWarehouseStock(
+            (await Promise.all(productPromises))
+              .filter((p) => p !== null)
+              .sort((a, b) => (a.featuredIndex || 0) - (b.featuredIndex || 0))
+          );
+
           setFeaturedProductsData(products);
           const hasProducts = products.length > 0;
           setShowFeatured(hasProducts);
-          logger.info(`Featured products loaded: ${products.length} out of ${items.length} items, showFeatured=${hasProducts}`);
+          logger.info(
+            `Featured products loaded: ${products.length} in stock on warehouse out of ${items.length} items, showFeatured=${hasProducts}`
+          );
         } else {
           setFeaturedProducts([]);
           setFeaturedProductsData([]);
@@ -1459,7 +1505,7 @@ function PortalApp() {
 
                 {smartPanelMode === 'groups' ? (
                     <div className="max-h-[55vh] flex-1 space-y-1 overflow-auto md:max-h-none md:flex-none md:overflow-visible">
-                    {productGroups.map(group => {
+                    {sidebarProductGroups.map(group => {
                       const isExpanded = expandedGroup === group.id;
                       const isSelected = selectedGroup === group.id;
                       const groupType = group.groupType || (group.filterType === 'category' ? 'category' : 'preset');
@@ -1469,6 +1515,18 @@ function PortalApp() {
                           <button
                             className={`w-full text-left px-2 py-1.5 flex items-center justify-between text-sm font-medium ${isSelected ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-gray-50'}`}
                             onClick={() => {
+                              if (groupType === 'featured') {
+                                // Показуємо featured products (нові пропозиції)
+                                setSelectedGroup(FEATURED_GROUP_ID);
+                                setSelectedBrand(null);
+                                setSelectedCategory(null);
+                                setProducts([]);
+                                setLastDocSnap(null);
+                                setHasMore(false);
+                                closeMobileSmartPanel();
+                                return;
+                              }
+                              
                               if (groupType === 'preset' && group.brands && group.brands.length > 0) {
                                 // Для preset-груп з одним брендом - завантажуємо товари по бренду
                                 if (group.brands.length === 1) {
@@ -1541,7 +1599,7 @@ function PortalApp() {
                         </div>
                       );
                     })}
-                    {productGroups.length === 0 && (
+                    {sidebarProductGroups.length === 0 && (
                       <div className="text-sm text-gray-500 px-2 py-1">Групи не налаштовані</div>
                     )}
                   </div>
@@ -1594,6 +1652,19 @@ function PortalApp() {
               {isFetchingProducts && (
                 <div className="text-center py-8 text-gray-500">Завантаження товарів...</div>
               )}
+              {showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive)) && (
+                <FeaturedProductCards
+                  appId={appId}
+                  items={featuredProductsData}
+                  client={safeClient}
+                  clientPricingRules={clientPricingRules}
+                  selectedCurrency={selectedCurrency}
+                  uahRate={uahRate}
+                  showOnlyInStock={showOnlyInStock}
+                  showOnlyPartners={showOnlyPartners}
+                  onAddToCart={handleAddToCart}
+                />
+              )}
           <ProductCatalog
             appId={appId}
             clientPricingRules={clientPricingRules}
@@ -1606,21 +1677,12 @@ function PortalApp() {
                 selectedCategory={selectedCategory}
                 selectedCurrency={selectedCurrency}
                 uahRate={uahRate}
-                featuredProducts={featuredProductsData}
                 isArticleSearchActive={isArticleSearchActive}
-                showFeatured={(() => {
-                  const shouldShow = showFeatured && !selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive;
-                  console.log('[Portal] Featured products check:', {
-                    showFeatured,
-                    selectedBrand,
-                    selectedGroup,
-                    selectedCategory,
-                    shouldShow,
-                    featuredCount: featuredProductsData.length,
-                    hasProducts: products.length
-                  });
-                  return shouldShow;
-                })()}
+                excludeDocIds={
+                  showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive))
+                    ? featuredProductsData.map((p) => p.docId).filter(Boolean)
+                    : []
+                }
           />
               {hasMore && !isFetchingProducts && (
                 <div className="text-center mt-4">

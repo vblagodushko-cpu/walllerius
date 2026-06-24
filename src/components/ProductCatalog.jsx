@@ -3,176 +3,14 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase-config';
 import Tooltip from './Tooltip.jsx';
 import {
-  WAREHOUSE_SUPPLIER,
-  isWarehouseLine,
-  getCartLineStock,
-  buildStockWarningLines,
-  confirmStockOverOrder,
-} from '../utils/cartStockWarning.js';
+  calculateProductPrice,
+  getPriceFromPublicPrices,
+  filterAndSortOffers,
+} from '../utils/productPricing.js';
+import AddToCartModal from './AddToCartModal.jsx';
+import ProductDetailModal from './ProductDetailModal.jsx';
 
 const MAX_DETAIL_BODY_CHARS = 80000;
-
-/** Безпечне відображення: без HTML/Markdown-рендеру (тільки текст + переноси рядків). */
-function ProductDetailModal({ product, body, imageUrl, loading, error, onClose }) {
-  const [lightboxOpen, setLightboxOpen] = useState(false);
-  if (!product) return null;
-  return (
-    <>
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
-        <div className="p-4 border-b flex justify-between items-start gap-2">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Деталі товару</h3>
-            <p className="text-sm text-gray-600 mt-1 break-words">{product.name || 'Без назви'}</p>
-            <p className="text-xs text-gray-500 mt-1">
-              {product.brand} · {product.id}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-sm shrink-0"
-          >
-            Закрити
-          </button>
-        </div>
-        <div className="p-4 overflow-y-auto flex-1 min-h-0">
-          {loading && <p className="text-gray-500 text-sm">Завантаження...</p>}
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          {!loading && !error && (
-            <>
-              {imageUrl ? (
-                <button
-                  type="button"
-                  onClick={() => setLightboxOpen(true)}
-                  className="mb-4 block w-full rounded-lg border bg-gray-50 overflow-hidden focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  title="Збільшити фото"
-                >
-                  <img
-                    src={imageUrl}
-                    alt=""
-                    className="w-full max-h-56 object-contain mx-auto"
-                    loading="lazy"
-                  />
-                </button>
-              ) : null}
-              <pre className="whitespace-pre-wrap text-sm text-gray-800 font-sans leading-relaxed">
-                {body?.trim() ? body : 'Детальний опис ще не додано.'}
-              </pre>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-    {lightboxOpen && imageUrl && (
-      <div
-        className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4"
-        onClick={() => setLightboxOpen(false)}
-        role="presentation"
-      >
-        <button
-          type="button"
-          className="absolute top-4 right-4 text-white text-sm px-3 py-1 rounded bg-white/20"
-          onClick={() => setLightboxOpen(false)}
-        >
-          Закрити
-        </button>
-        <img
-          src={imageUrl}
-          alt=""
-          className="max-w-full max-h-[90vh] object-contain"
-          onClick={(e) => e.stopPropagation()}
-        />
-      </div>
-    )}
-    </>
-  );
-}
-
-const AddToCartModal = ({ product, onAddToCart, onClose }) => {
-  const [quantity, setQuantity] = useState(1);
-  const supplier = product.selectedSupplier || product.supplier || WAREHOUSE_SUPPLIER;
-  const warehouseLine = isWarehouseLine({ supplier });
-  const availableStock = warehouseLine ? getCartLineStock(product) : null;
-  const qtyNum = parseInt(quantity, 10) || 1;
-  const overStock =
-    warehouseLine &&
-    availableStock !== null &&
-    qtyNum > availableStock;
-
-  const handleAdd = () => {
-    const q = parseInt(quantity, 10) || 1;
-    if (warehouseLine && availableStock !== null && q > availableStock) {
-      const lines = buildStockWarningLines(
-        [{ ...product, supplier, stock: availableStock, quantity: q }],
-        null
-      );
-      if (!confirmStockOverOrder(lines, { singleLine: true })) return;
-    }
-    onAddToCart(q);
-    onClose();
-  };
-  const handleDecrease = () => setQuantity(prev => Math.max(1, (parseInt(prev, 10) || 1) - 1));
-  const handleIncrease = () => setQuantity(prev => (parseInt(prev, 10) || 1) + 1);
-  const handleInputFocus = (e) => e.target.select();
-  const handleInputChange = (e) => {
-    const value = e.target.value;
-    if (value === '' || value === '-') {
-      setQuantity('');
-      return;
-    }
-    const num = parseInt(value, 10);
-    if (!isNaN(num) && num >= 1) {
-      setQuantity(num);
-    }
-  };
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm">
-        <div className="p-6">
-          <h3 className="text-lg font-semibold mb-2">Додати в кошик</h3>
-          <p className="text-sm text-gray-700 mb-4">{product.name}</p>
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">Кількість</label>
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={handleDecrease} 
-                className="px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-lg font-semibold transition-colors"
-                type="button"
-              >−</button>
-              <input 
-                type="number" 
-                min="1" 
-                value={quantity} 
-                onChange={handleInputChange}
-                onFocus={handleInputFocus}
-                className="flex-1 p-2 border rounded-md text-center" 
-                autoFocus 
-              />
-              <button 
-                onClick={handleIncrease} 
-                className="px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-lg font-semibold transition-colors"
-                type="button"
-              >+</button>
-            </div>
-            {warehouseLine && availableStock !== null ? (
-              <p className="mt-2 text-xs text-gray-500">На складі: {availableStock}</p>
-            ) : null}
-            {overStock ? (
-              <p className="mt-1 text-xs font-medium text-orange-500">
-                Замовлено більше, ніж на складі
-              </p>
-            ) : null}
-          </div>
-          <div className="flex justify-end gap-4">
-            <button onClick={onClose} className="btn bg-gray-300 hover:bg-gray-400 text-black">Скасувати</button>
-            <button onClick={handleAdd} className="btn btn-primary">Додати</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 const ProductCatalog = ({
   appId,
@@ -186,8 +24,7 @@ const ProductCatalog = ({
   clientPricingRules = null,
   selectedCurrency = 'EUR',
   uahRate = null,
-  featuredProducts = [],
-  showFeatured = false,
+  excludeDocIds = [],
   isArticleSearchActive = false,
 }) => {
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -205,6 +42,9 @@ const ProductCatalog = ({
         brand: productRow.brand,
         id: productRow.id,
         name: productRow.name,
+        pack: productRow.pack || "",
+        tolerances: productRow.tolerances || "",
+        toleranceTags: Array.isArray(productRow.toleranceTags) ? productRow.toleranceTags : [],
       });
       setDetailBody('');
       setDetailImageUrl('');
@@ -244,142 +84,23 @@ const ProductCatalog = ({
     window.open(`https://www.google.com/search?q=${searchQuery}`, '_blank');
   };
 
-  // Функція для знаходження правила
-  const findRule = (rules, type, brand, id, supplier) => {
-    if (!rules || !rules.rules || !Array.isArray(rules.rules)) return null;
-    
-    for (const rule of rules.rules) {
-      if (rule.type === "product" && type === "product" && rule.brand === brand && rule.id === id) {
-        return rule;
-      }
-      if (rule.type === "brand" && type === "brand" && rule.brand === brand) {
-        return rule;
-      }
-      if (rule.type === "supplier" && type === "supplier" && rule.supplier === supplier) {
-        return rule;
-      }
-    }
-    return null;
-  };
+  const excludeSet = useMemo(() => {
+    if (excludeDocIds instanceof Set) return excludeDocIds;
+    return new Set(Array.isArray(excludeDocIds) ? excludeDocIds.filter(Boolean) : []);
+  }, [excludeDocIds]);
 
-  // Обчислення ціни з урахуванням правил
-  const calculatePriceWithRules = (product, offer) => {
-    if (!offer || !offer.publicPrices) return 0;
-    
-    // 1. Визначаємо градацію та adjustment (пріоритет)
-    let priceGroup = client.priceType || "роздріб"; // за замовчуванням
-    let adjustment = 0;
-    
-    if (clientPricingRules && clientPricingRules.rules) {
-      // Перевірка персональних правил (пріоритет)
-      const productRule = findRule(clientPricingRules, "product", product.brand, product.id, null);
-      if (productRule) {
-        priceGroup = productRule.priceGroup;
-        // Міграція: якщо є старі поля, конвертуємо
-        if (productRule.adjustment !== undefined) {
-          adjustment = Number(productRule.adjustment || 0);
-        } else {
-          const discount = Number(productRule.discount || 0);
-          const markup = Number(productRule.markup || 0);
-          adjustment = markup - discount;
-        }
-      } else {
-        const brandRule = findRule(clientPricingRules, "brand", product.brand, null, null);
-        if (brandRule) {
-          priceGroup = brandRule.priceGroup;
-          if (brandRule.adjustment !== undefined) {
-            adjustment = Number(brandRule.adjustment || 0);
-          } else {
-            const discount = Number(brandRule.discount || 0);
-            const markup = Number(brandRule.markup || 0);
-            adjustment = markup - discount;
-          }
-        } else {
-          const supplierRule = findRule(clientPricingRules, "supplier", null, null, offer.supplier);
-          if (supplierRule) {
-            priceGroup = supplierRule.priceGroup;
-            if (supplierRule.adjustment !== undefined) {
-              adjustment = Number(supplierRule.adjustment || 0);
-            } else {
-              const discount = Number(supplierRule.discount || 0);
-              const markup = Number(supplierRule.markup || 0);
-              adjustment = markup - discount;
-            }
-          }
-        }
-      }
-    }
-    
-    // 2. Беремо ціну з градації
-    let basePrice = offer.publicPrices[priceGroup];
-    if (!basePrice || basePrice <= 0) {
-      // Fallback на роздрібну, якщо градації немає
-      basePrice = offer.publicPrices.роздріб;
-      if (!basePrice || basePrice <= 0) return 0;
-    }
-    
-    // 3. Застосовуємо персональний adjustment (може бути негативним для знижки або позитивним для націнки)
-    let price = basePrice;
-    price = price * (1 + adjustment/100);
-    
-    // 4. Застосовуємо загальний adjustment (останнім)
-    if (clientPricingRules) {
-      let globalAdjustment = 0;
-      if (clientPricingRules.globalAdjustment !== undefined) {
-        globalAdjustment = Number(clientPricingRules.globalAdjustment || 0);
-      } else {
-        // Міграція: конвертація зі старих полів
-        const globalDiscount = Number(clientPricingRules.globalDiscount || 0);
-        const globalMarkup = Number(clientPricingRules.globalMarkup || 0);
-        globalAdjustment = globalMarkup - globalDiscount;
-      }
-      price = price * (1 + globalAdjustment/100);
-    }
-    
-    // 5. Округлення в більшу сторону до сотих
-    let finalPrice = Math.ceil(price * 100) / 100;
-    
-    // Конвертація валюти виконується в calculatePrice, щоб уникнути подвійної конвертації
-    
-    return finalPrice;
-  };
+  const calculatePrice = (product, offer = null) =>
+    calculateProductPrice({
+      product,
+      offer,
+      client,
+      clientPricingRules,
+      selectedCurrency,
+      uahRate,
+    });
 
-  const getPrice = (publicPrices, supplier) => {
-    if (!publicPrices || typeof publicPrices !== "object") return null;
-    // Використовуємо publicPrices для всіх постачальників (включаючи "Мій склад")
-    return publicPrices[client.priceType] ?? null;
-  };
-
-  const calculatePrice = (product, offer = null) => {
-    let price = 0;
-    
-    // Якщо є правила - використовуємо нову логіку
-    if (clientPricingRules && offer) {
-      price = calculatePriceWithRules(product, offer);
-    } else if (offer) {
-      // Стара логіка (fallback)
-      price = offer.publicPrices?.[client.priceType] ?? 0;
-    } else {
-    // Якщо пропозиція не передана - шукаємо пропозицію від "Мій склад"
-    if (!product.offers || !Array.isArray(product.offers)) return 0;
-    const myWarehouseOffer = product.offers.find(o => o.supplier === 'Мій склад');
-    if (!myWarehouseOffer) return 0;
-    
-      if (clientPricingRules) {
-        price = calculatePriceWithRules(product, myWarehouseOffer);
-      } else {
-        price = myWarehouseOffer.publicPrices?.[client.priceType] ?? 0;
-      }
-    }
-    
-    // Конвертація валюти (якщо вибрано UAH)
-    if (selectedCurrency === 'UAH' && uahRate && uahRate > 0 && price > 0) {
-      price = price * uahRate;
-      price = Math.round(price * 100) / 100;
-    }
-    
-    return price;
-  };
+  const getPrice = (publicPrices) =>
+    getPriceFromPublicPrices(publicPrices, client.priceType);
 
   const getSupplierComment = (supplierName) => {
     const supplier = suppliers.find(s => s.name === supplierName);
@@ -387,77 +108,22 @@ const ProductCatalog = ({
   };
 
   // Обробка offers[] та створення рядків для відображення (як в адмін-панелі)
+  const offerFilterOpts = useMemo(
+    () => ({
+      showOnlyPartners,
+      showOnlyInStock,
+      isArticleSearchActive,
+      clientPricingRules,
+      client,
+    }),
+    [showOnlyPartners, showOnlyInStock, isArticleSearchActive, clientPricingRules, client]
+  );
+
   const displayRows = useMemo(() => {
     const rows = [];
-    
-    // Додаємо featured products на початок, якщо showFeatured = true
-    if (showFeatured && featuredProducts && featuredProducts.length > 0) {
-      console.log('[ProductCatalog] Showing featured products:', featuredProducts.length, 'products');
-      let skippedNoOffers = 0;
-      for (const product of featuredProducts) {
-        if (!product.offers || !Array.isArray(product.offers)) {
-          skippedNoOffers++;
-          console.log('[ProductCatalog] Skipping featured product (no offers):', product.brand, product.id);
-          continue;
-        }
-        
-        // Фільтрація offers для featured products
-        let filteredOffers = product.offers;
-        
-        // Ігноруємо тумблери при активному пошуку по артикулу
-        if (!isArticleSearchActive) {
-          if (!showOnlyPartners) {
-            // Тумблер вимкнений - показуємо тільки склад
-            filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
-          }
-          // Тумблер увімкнений - показуємо все (склад + партнери), не фільтруємо
-          
-          if (showOnlyInStock) {
-            filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
-          }
-        }
-        
-        if (filteredOffers.length === 0) continue;
-        
-        // Сортування offers
-        filteredOffers.sort((a, b) => {
-          if (a.supplier === "Мій склад" && b.supplier !== "Мій склад") return -1;
-          if (a.supplier !== "Мій склад" && b.supplier === "Мій склад") return 1;
-          
-          const productForRules = { brand: product.brand, id: product.id };
-          const priceA = clientPricingRules 
-            ? calculatePriceWithRules(productForRules, a)
-            : (getPrice(a.publicPrices, a.supplier) ?? Infinity);
-          const priceB = clientPricingRules
-            ? calculatePriceWithRules(productForRules, b)
-            : (getPrice(b.publicPrices, b.supplier) ?? Infinity);
-          return priceA - priceB;
-        });
-        
-        for (const offer of filteredOffers) {
-          rows.push({
-            docId: product.docId,
-            brand: product.brand || "",
-            id: product.id || "",
-            name: product.name || "",
-            supplier: offer.supplier || "",
-            stock: offer.stock ?? 0,
-            publicPrices: offer.publicPrices || {},
-            isFeatured: true,
-          });
-        }
-      }
-      if (skippedNoOffers > 0) {
-        console.log(`[ProductCatalog] Skipped ${skippedNoOffers} featured products without offers`);
-      }
-    } else if (featuredProducts && featuredProducts.length > 0) {
-      console.log('[ProductCatalog] Featured products NOT showing because:', {
-        showFeatured,
-        featuredProductsLength: featuredProducts.length
-      });
-    }
-    
+
     for (const product of products) {
+      if (product.docId && excludeSet.has(product.docId)) continue;
       // Фільтр по категорії (якщо вибрано)
       if (selectedCategory) {
         const productCategories = Array.isArray(product.categories) ? product.categories : [];
@@ -466,45 +132,9 @@ const ProductCatalog = ({
         }
       }
 
-      if (!product.offers || !Array.isArray(product.offers)) {
-        continue;
-      }
-      
-      // Фільтрація offers
-      let filteredOffers = product.offers;
-      
-      // Ігноруємо тумблери при активному пошуку по артикулу
-      if (!isArticleSearchActive) {
-        if (!showOnlyPartners) {
-          // Тумблер вимкнений - показуємо тільки склад
-          filteredOffers = filteredOffers.filter(o => o.supplier === 'Мій склад');
-        }
-        // Тумблер увімкнений - показуємо все (склад + партнери), не фільтруємо
-        
-        // Фільтр: показувати тільки наявні
-        if (showOnlyInStock) {
-          filteredOffers = filteredOffers.filter(o => (o.stock || 0) > 0);
-        }
-      }
-      
+      const filteredOffers = filterAndSortOffers(product, offerFilterOpts);
       if (filteredOffers.length === 0) continue;
-      
-      // Сортування offers: спочатку "Мій склад", потім інші по зростанню ціни
-      filteredOffers.sort((a, b) => {
-        if (a.supplier === "Мій склад" && b.supplier !== "Мій склад") return -1;
-        if (a.supplier !== "Мій склад" && b.supplier === "Мій склад") return 1;
-        
-        const productForRules = { brand: product.brand, id: product.id };
-        const priceA = clientPricingRules 
-          ? calculatePriceWithRules(productForRules, a)
-          : (getPrice(a.publicPrices, a.supplier) ?? Infinity);
-        const priceB = clientPricingRules
-          ? calculatePriceWithRules(productForRules, b)
-          : (getPrice(b.publicPrices, b.supplier) ?? Infinity);
-        return priceA - priceB;
-      });
-      
-      // Створюємо один рядок на кожен offer
+
       for (const offer of filteredOffers) {
         rows.push({
           docId: product.docId,
@@ -519,7 +149,7 @@ const ProductCatalog = ({
     }
     
     return rows;
-  }, [products, featuredProducts, showFeatured, showOnlyInStock, showOnlyPartners, selectedCategory, client.priceType, clientPricingRules, isArticleSearchActive]);
+  }, [products, excludeSet, offerFilterOpts, selectedCategory]);
 
   // Групування рядків по товарах для rowspan
   const groupedRows = useMemo(() => {
@@ -540,7 +170,6 @@ const ProductCatalog = ({
             brand: row.brand,
             id: row.id,
             name: row.name,
-            isFeatured: row.isFeatured || false,
           },
           offers: [row],
         };
@@ -601,11 +230,6 @@ const ProductCatalog = ({
                 {/* Колонка A ~75% */}
                 <div className="basis-[75%] flex flex-col gap-1 min-w-0">
                   <div className="flex items-start gap-1">
-                    {row.isFeatured && (
-                      <span className="flex-shrink-0 text-amber-500" title="Рекомендований товар">
-                        📌
-                      </span>
-                    )}
                     <span className="flex-1 text-base font-semibold text-gray-900 leading-snug break-words">
                       {row.name || 'Без назви'}
                     </span>
@@ -728,11 +352,6 @@ const ProductCatalog = ({
                         </td>
                         <td rowSpan={rowspan} className="px-3 py-2 align-top text-sm break-words border border-gray-300">
                           <div className="flex items-start gap-2">
-                            {group.product.isFeatured && (
-                              <span className="flex-shrink-0 text-amber-500" title="Рекомендований товар">
-                                📌
-                              </span>
-                            )}
                             <span className="flex-1">{group.product.name}</span>
                             <button
                               onClick={(e) => {

@@ -51,10 +51,14 @@ service cloud.firestore {
         }
 
         // Клієнти: читати може адмін або власник свого профілю.
-        // Оновлювати може власник, створювати/видаляти - тільки адмін.
+        // Власник може оновлювати лише безпечні поля (не priceType, не id).
+        // Створювати/видаляти - тільки адмін.
         match /clients/{clientId} {
           allow read: if isAdmin() || (isAuthed() && uid() == clientId);
-          allow update: if isAuthed() && uid() == clientId;
+          allow update: if isAdmin()
+            || (isAuthed() && uid() == clientId
+                && request.resource.data.priceType == resource.data.priceType
+                && request.resource.data.id == resource.data.id);
           allow create, delete: if isAdmin();
         }
         

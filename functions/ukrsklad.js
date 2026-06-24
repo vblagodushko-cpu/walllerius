@@ -230,7 +230,10 @@ async function performUkrSkladSync(forceSync = false) {
 
       // 7) Підготовка операцій для upsert
       const operationsToUpsert = [];
-      const operationsToRemove = [];
+
+      // Реальні docId, записані з цього прайсу (mark-and-sweep по docId, а не по
+      // реконструйованому ключу) — усуває «чергування присутності» товару в базі.
+      const keptDocIds = new Set();
 
       for (const { row, normalizedBrand, normalizedArticle, productKey, brandRaw, idRaw } of rowsToProcess) {
         try {
@@ -251,10 +254,7 @@ async function performUkrSkladSync(forceSync = false) {
           const canonicalArticle = masterData ? normalizeArticle(masterData.id) : normalizedArticle;
           const canonicalBrand   = masterData?.brand ? masterData.brand : normalizedBrand;
           const idToUse          = masterData ? masterData.id : idRaw; // id залишається істина, але беремо канонічний, якщо він є
-          
-          // Додаємо канонічний ключ до бажаних, щоб cleanup не видалив
           const canonicalKey = `${canonicalBrand}-${canonicalArticle}`;
-          normalizedProductKeys.add(canonicalKey);
 
           // Якщо stock <= 0 — записуємо як 0 (не видаляємо)
           const finalStock = stock <= 0 ? 0 : stock;
@@ -302,45 +302,11 @@ async function performUkrSkladSync(forceSync = false) {
         }
       }
 
-      const keepKeys = new Set(operationsToUpsert.map(op => op.productKey));
-        
-      // Додаємо товари для видалення з cleanup
-      for (const { productKey, productDocId } of toRemoveList) {
-        // Якщо ми щойно готуємо upsert для цього canonicalKey — не видаляємо
-        if (keepKeys.has(productKey)) continue;
-        try {
-          const productDoc = await publicProductsCol.doc(productDocId).get();
-          if (!productDoc.exists) {
-            logger.debug("Product not found for removal", { productKey, productDocId });
-            continue;
-          }
-          
-          const data = productDoc.data();
-          // Використовуємо canonical поля для ключа
-          const canonicalBrand = data.canonicalBrand || data.brand;
-          const canonicalArticle = data.canonicalArticle || data.id;
-          const canonicalKey = `${canonicalBrand}-${canonicalArticle}`;
-          
-          // Перевіряємо, чи не в keepKeys
-          if (keepKeys.has(canonicalKey)) continue;
-          
-          operationsToRemove.push({
-            productKey: canonicalKey,
-            productDocId,
-            id: data.id,
-            brand: data.brand
-          });
-        } catch (e) {
-          logger.warn("Failed to prepare removal", { productKey, error: e.message });
-        }
-      }
-
       // 8) Батч-виконання upsert з обмеженням concurrency
       const CONCURRENCY_LIMIT = 15;
       
       logger.info("performUkrSkladSync: starting batch upsert", { 
         toUpsert: operationsToUpsert.length,
-        toRemove: operationsToRemove.length,
         supplier: supplierNorm
       });
 
@@ -349,12 +315,10 @@ async function performUkrSkladSync(forceSync = false) {
         const batch = operationsToUpsert.slice(i, i + CONCURRENCY_LIMIT);
         const promises = batch.map(async (op) => {
           try {
-            await upsertProduct({
+            const docId = await upsertProduct({
               supplier: op.supplier,
               brand: op.canonicalBrand,        // формуємо docId за канонічним brand
               id: op.rawId,                    // тут вже канонічний id, якщо masterData знайдені
-              canonicalBrand: op.canonicalBrand,
-              canonicalArticle: op.canonicalArticle,
               name: op.name,
               stock: op.stock,
               publicPrices: op.publicPrices,
@@ -367,14 +331,19 @@ async function performUkrSkladSync(forceSync = false) {
               minStock: op.minStock,
               lastSupplier: op.lastSupplier // Останній постачальник з CSV
             });
-            return { success: true, productKey: op.productKey };
+            return { success: true, docId };
           } catch (e) {
             logger.error("Upsert failed", { productKey: op.productKey, error: e.message });
             return { success: false, productKey: op.productKey, error: e.message };
           }
         });
         
-        await Promise.allSettled(promises);
+        const results = await Promise.allSettled(promises);
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value?.docId) {
+            keptDocIds.add(r.value.docId);
+          }
+        }
       }
 
       await enrichMiySkladProductsFromMaster({
@@ -386,35 +355,41 @@ async function performUkrSkladSync(forceSync = false) {
         supplierProductsCol,
       });
 
-      // 9) Батч-видалення з обмеженням concurrency
+      // 9) Cleanup: видаляємо пропозиції «Мій склад», яких немає в новому прайсі.
+      // Звіряємо за реальним productDocId — щойно записані товари (keptDocIds) лишаються.
+      const operationsToRemove = toRemoveList.filter(
+        ({ productDocId }) => productDocId && !keptDocIds.has(productDocId)
+      );
+
+      logger.info("performUkrSkladSync: starting cleanup", {
+        toRemove: operationsToRemove.length,
+        supplier: supplierNorm
+      });
+
       for (let i = 0; i < operationsToRemove.length; i += CONCURRENCY_LIMIT) {
         const batch = operationsToRemove.slice(i, i + CONCURRENCY_LIMIT);
         const promises = batch.map(async (op) => {
           try {
-            // Перевірка перед видаленням
             const productDoc = await publicProductsCol.doc(op.productDocId).get();
             if (!productDoc.exists) {
-              logger.debug("Product already deleted", { productKey: op.productKey });
-              return { success: true, productKey: op.productKey, skipped: true };
+              return { success: true, skipped: true };
             }
             
             const data = productDoc.data();
-            // Перевіряємо, чи є offer від постачальника
             const hasOffer = data.offers?.some(o => o.supplier === supplierNorm);
             if (!hasOffer) {
-              logger.debug("Offer already removed", { productKey: op.productKey });
-              return { success: true, productKey: op.productKey, skipped: true };
+              return { success: true, skipped: true };
             }
             
             await removeProduct({
               supplier: supplierNorm,
-              id: op.id || data.id,
-              brand: op.brand || data.brand
+              id: data.id,
+              brand: data.brand
             });
-            return { success: true, productKey: op.productKey };
+            return { success: true };
           } catch (e) {
-            logger.warn("Remove failed", { productKey: op.productKey, error: e.message });
-            return { success: false, productKey: op.productKey, error: e.message };
+            logger.warn("Remove failed", { productDocId: op.productDocId, error: e.message });
+            return { success: false, error: e.message };
           }
         });
         
