@@ -15,7 +15,6 @@ const logger = require("firebase-functions/logger");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const iconv = require("iconv-lite");
 const Papa = require("papaparse");
-const { google } = require("googleapis");
 
 const db = getFirestore();
 
@@ -113,6 +112,7 @@ function isDateWithinLastNDays(date, days) {
 async function settlementsSyncCore() {
   logger.info("Settlements sync started.");
 
+  const { google } = require("googleapis");
   const gauth = new google.auth.GoogleAuth({ scopes: ["https://www.googleapis.com/auth/drive"] });
   const drive = google.drive({ version: "v3", auth: gauth });
 

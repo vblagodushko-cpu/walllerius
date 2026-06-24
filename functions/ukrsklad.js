@@ -2,7 +2,6 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
-const { google } = require("googleapis");
 const iconv = require("iconv-lite");
 const Papa = require("papaparse");
 const { normalizeBrand, normalizeBrandKey, normalizeArticle, getProductMasterData, upsertProduct, removeProduct, db, FieldValue } = require("./shared");
@@ -106,6 +105,7 @@ async function performUkrSkladSync(forceSync = false) {
 
       const syncStateRef = db.doc(`/artifacts/${APP_ID}/public/meta/syncState/syncState`);
       // 1) знаходимо останній файл у папці
+      const { google } = require("googleapis");
       const gauth = new google.auth.GoogleAuth({
         scopes: ["https://www.googleapis.com/auth/drive.readonly"],
       });
@@ -421,6 +421,7 @@ async function syncCurrencyRates() {
     const currencyRatesRef = db.doc(`/artifacts/${APP_ID}/public/meta/currencyRates/uahToEur`);
     
     // 1) Знаходимо файл у папці
+    const { google } = require("googleapis");
     const gauth = new google.auth.GoogleAuth({
       scopes: ["https://www.googleapis.com/auth/drive.readonly"],
     });

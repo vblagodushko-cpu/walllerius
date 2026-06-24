@@ -52,7 +52,6 @@ const SETTLEMENTS_FOLDER_ID = "1ak0Ut14CDJSJB7Gy37k6EYs3HkigIk0C";
 const str = (x, max = 400) => (x == null ? "" : String(x)).slice(0, max);
 
 const path = require("path");
-const { google } = require("googleapis");
 const Papa = require("papaparse");
 const iconv = require("iconv-lite");
 
@@ -78,6 +77,7 @@ function parseFilename(name) {
   };
 }
 async function mkDrive() {
+  const { google } = require("googleapis");
   const gauth = new google.auth.GoogleAuth({ scopes: ["https://www.googleapis.com/auth/drive.readonly"] });
   return google.drive({ version: "v3", auth: await gauth.getClient() });
 }
@@ -237,6 +237,8 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     pack,
     tolerances,
     toleranceTags,
+    viscosities,
+    viscosityTags,
     synonyms,
   } = request.data || {};
 
@@ -255,6 +257,11 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     normalizeToleranceTags,
     toleranceGroupsFromTags,
   } = require("./shared/tolerances");
+  const {
+    parseViscosityTags,
+    normalizeViscosityTags,
+    viscosityGroupsFromTags,
+  } = require("./shared/viscosities");
   const cleanProductDocId = sharedStr(productDocId, 200);
   const cleanBrand = sharedStr(brand, 120).replace(/\s{2,}/g, " ").trim();
   const cleanId = normalizeArticle(id);
@@ -288,6 +295,12 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     ? explicitToleranceTags
     : parseToleranceTags(safeTolerances);
   const safeToleranceGroups = toleranceGroupsFromTags(safeToleranceTags);
+  const safeViscosities = sharedStr(viscosities, 500);
+  const explicitViscosityTags = normalizeViscosityTags(viscosityTags);
+  const safeViscosityTags = explicitViscosityTags.length
+    ? explicitViscosityTags
+    : parseViscosityTags(safeViscosities);
+  const safeViscosityGroups = viscosityGroupsFromTags(safeViscosityTags);
 
   const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${cleanProductDocId}`);
   const productSnap = await productRef.get();
@@ -325,6 +338,9 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     tolerances: safeTolerances,
     toleranceTags: safeToleranceTags,
     toleranceGroups: safeToleranceGroups,
+    viscosities: safeViscosities,
+    viscosityTags: safeViscosityTags,
+    viscosityGroups: safeViscosityGroups,
     synonyms: safeSynonyms,
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
@@ -336,6 +352,9 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     tolerances: safeTolerances,
     toleranceTags: safeToleranceTags,
     toleranceGroups: safeToleranceGroups,
+    viscosities: safeViscosities,
+    viscosityTags: safeViscosityTags,
+    viscosityGroups: safeViscosityGroups,
     synonyms: safeSynonyms,
     masterDataUpdatedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -484,6 +503,9 @@ exports.peekProductMasterData = onCall({ region: REGION, cors: true }, async (re
       tolerances: keep.tolerances,
       toleranceTags: keep.toleranceTags,
       toleranceGroups: keep.toleranceGroups,
+      viscosities: keep.viscosities,
+      viscosityTags: keep.viscosityTags,
+      viscosityGroups: keep.viscosityGroups,
       synonyms: keep.synonyms,
     },
   };
@@ -508,6 +530,7 @@ exports.monitorProductMasterData = onCall({ region: REGION, cors: true }, async 
     "categories",
     "pack",
     "tolerances",
+    "viscosities",
     "synonyms",
   ]);
   const selectedFields = Array.isArray(fields)
@@ -539,6 +562,7 @@ exports.monitorProductMasterData = onCall({ region: REGION, cors: true }, async 
     if (field === "categories") return !Array.isArray(masterData.categories) || masterData.categories.length === 0;
     if (field === "pack") return !str(masterData.pack, 200).trim();
     if (field === "tolerances") return !str(masterData.tolerances, 500).trim();
+    if (field === "viscosities") return !str(masterData.viscosities, 500).trim();
     if (field === "synonyms") return !Array.isArray(masterData.synonyms) || masterData.synonyms.length === 0;
     return false;
   };
@@ -644,6 +668,13 @@ exports.monitorProductMasterData = onCall({ region: REGION, cors: true }, async 
         toleranceGroups: Array.isArray(masterData?.toleranceGroups)
           ? masterData.toleranceGroups
           : (Array.isArray(productData.toleranceGroups) ? productData.toleranceGroups : []),
+        viscosities: masterData?.viscosities || productData.viscosities || "",
+        viscosityTags: Array.isArray(masterData?.viscosityTags)
+          ? masterData.viscosityTags
+          : (Array.isArray(productData.viscosityTags) ? productData.viscosityTags : []),
+        viscosityGroups: Array.isArray(masterData?.viscosityGroups)
+          ? masterData.viscosityGroups
+          : (Array.isArray(productData.viscosityGroups) ? productData.viscosityGroups : []),
         synonyms: Array.isArray(masterData?.synonyms)
           ? masterData.synonyms
           : (Array.isArray(productData.synonyms) ? productData.synonyms : []),
@@ -1988,3 +2019,4 @@ try { Object.assign(exports, require("./settlements")); } catch (e) { logger.war
 try { Object.assign(exports, require("./warehouse")); } catch (e) { logger.warn("warehouse module not found", String(e)); }
 try { Object.assign(exports, require("./adminExport")); } catch (e) { logger.warn("adminExport module not found", String(e)); }
 try { Object.assign(exports, require("./aiEnrichment")); } catch (e) { logger.warn("aiEnrichment module not found", String(e)); }
+try { Object.assign(exports, require("./masterDataExcel")); } catch (e) { logger.warn("masterDataExcel module not found", String(e)); }

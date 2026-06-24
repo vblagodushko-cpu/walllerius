@@ -16,6 +16,10 @@ const {
   parseToleranceTags,
   toleranceGroupsFromTags,
 } = require("./shared/tolerances");
+const {
+  parseViscosityTags,
+  viscosityGroupsFromTags,
+} = require("./shared/viscosities");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -33,6 +37,7 @@ const ALLOWED_FIELDS = new Set([
   "categories",
   "pack",
   "tolerances",
+  "viscosities",
   "synonyms",
   "detailBody",
 ]);
@@ -112,6 +117,9 @@ function isFieldMissing(field, product, master) {
   if (field === "tolerances") {
     return !str(master?.tolerances || product?.tolerances || "", 500).trim();
   }
+  if (field === "viscosities") {
+    return !str(master?.viscosities || product?.viscosities || "", 500).trim();
+  }
   if (field === "synonyms") {
     const syns = Array.isArray(master?.synonyms)
       ? master.synonyms
@@ -125,7 +133,7 @@ function isFieldMissing(field, product, master) {
 function resolveTargetFields(requested, product, master, includeDetailBody, detailBodyExists) {
   const base = requested.length
     ? requested.filter((f) => ALLOWED_FIELDS.has(f))
-    : ["correctName", "categories", "pack", "tolerances", "synonyms"];
+    : ["correctName", "categories", "pack", "tolerances", "viscosities", "synonyms"];
 
   const fields = base.filter((field) => {
     if (field === "detailBody") {
@@ -151,6 +159,69 @@ function parseGeminiJson(text) {
     if (fence) return JSON.parse(fence[1].trim());
     throw new Error("Не вдалося розпарсити JSON від моделі.");
   }
+}
+
+const MAX_SOURCE_TEXT = 6000;
+const MAX_SOURCE_URLS = 3;
+
+/**
+ * Завантажити текстовий вміст сторінки (server-side, без CORS).
+ * Повертає рядок або null при помилці.
+ */
+async function fetchPageText(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(url.protocol)) return null;
+
+  try {
+    const res = await fetch(url.href, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; ProductBot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "uk,ru;q=0.8,en;q=0.6",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("text/") && !ct.includes("application/xhtml")) return null;
+    const html = await res.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#\d+;/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return text.slice(0, MAX_SOURCE_TEXT);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSourceUrls(urls) {
+  if (!Array.isArray(urls) || !urls.length) return [];
+  const clean = urls
+    .map((u) => str(u, 500).trim())
+    .filter(Boolean)
+    .slice(0, MAX_SOURCE_URLS);
+
+  const results = await Promise.all(clean.map(async (u) => {
+    const text = await fetchPageText(u);
+    return text ? { url: u, text } : null;
+  }));
+  return results.filter(Boolean);
 }
 
 async function callGemini(apiKey, systemPrompt, userPrompt) {
@@ -222,6 +293,12 @@ function sanitizeSuggestion(raw, targetFields, allowedCategories) {
     suggestion.toleranceGroups = toleranceGroupsFromTags(suggestion.toleranceTags);
     confidence.tolerances = clamp01(raw?.confidence?.tolerances);
   }
+  if (targetFields.includes("viscosities")) {
+    suggestion.viscosities = str(raw.viscosities, 500);
+    suggestion.viscosityTags = parseViscosityTags(suggestion.viscosities);
+    suggestion.viscosityGroups = viscosityGroupsFromTags(suggestion.viscosityTags);
+    confidence.viscosities = clamp01(raw?.confidence?.viscosities);
+  }
   if (targetFields.includes("synonyms")) {
     suggestion.synonyms = cleanList(raw.synonyms, 100, 120)
       .map(normalizeArticle)
@@ -253,55 +330,67 @@ function buildPrompt({
   master,
   targetFields,
   categoryNames,
+  sourceDocs = [],
 }) {
   const existing = {
     correctName: str(master?.correctName || "", 500),
     categories: Array.isArray(master?.categories) ? master.categories : [],
     pack: str(master?.pack || "", 200),
     tolerances: str(master?.tolerances || "", 500),
+    viscosities: str(master?.viscosities || "", 500),
     synonyms: Array.isArray(master?.synonyms) ? master.synonyms : [],
   };
 
-  return JSON.stringify(
-    {
-      task: "fill_missing_product_fields",
-      brand,
-      id,
-      currentName: productName,
-      existingMaster: existing,
-      fieldsToFill: targetFields,
-      allowedCategories: categoryNames,
-      rules: [
-        "Відповідь українською.",
-        "Заповнюй лише fieldsToFill.",
-        "categories — тільки з allowedCategories (1–3 шт.).",
-        "synonyms — альтернативні написання артикулу, не інші товари.",
-        "tolerances — пиши людським текстом, але тільки реальні стандарти/допуски: ACEA, API, ILSAC, JASO, MB, VW, BMW, Renault, Ford, GM, ZF, MAN, DOT, ISO, SAE.",
-        "pack — об'єм у літрах, лише число без одиниць: \"0.2\", \"1\", \"4\", \"5\", \"20\". Не пиши \"200 мл\", \"4л\", \"4 л\", \"1L\". 200 мл → \"0.2\". Для штучних товарів (фільтри, свічки) — порожній рядок.",
-        "Якщо даних недостатньо — порожній рядок або [] і поясни в notes.",
-        "Не вигадуй OEM/стандарти без впевненості.",
-      ],
-      responseSchema: {
-        correctName: "string",
-        categories: ["string"],
-        pack: "string (літри, число без одиниць)",
+  const payload = {
+    task: "fill_missing_product_fields",
+    brand,
+    id,
+    currentName: productName,
+    existingMaster: existing,
+    fieldsToFill: targetFields,
+    allowedCategories: categoryNames,
+    rules: [
+      "Відповідь українською.",
+      "Заповнюй лише fieldsToFill.",
+      "categories — тільки з allowedCategories (1–3 шт.).",
+      "synonyms — альтернативні написання артикулу, не інші товари.",
+      "tolerances — пиши людським текстом, але тільки реальні стандарти/допуски: ACEA, API, ILSAC, JASO, MB, VW, BMW, Renault, Ford, GM, ZF, MAN, DOT, ISO, SAE.",
+      "viscosities — в'язкість у форматі SAE (5W-30, 10W-40, 75W-90) або ISO VG (ISO VG 46, ISO VG 68). Лише реальні класи.",
+      "pack — об'єм у літрах, лише число без одиниць: \"0.2\", \"1\", \"4\", \"5\", \"20\". Не пиши \"200 мл\", \"4л\", \"4 л\", \"1L\". 200 мл → \"0.2\". Для штучних товарів (фільтри, свічки) — порожній рядок.",
+      "Якщо даних недостатньо — порожній рядок або [] і поясни в notes.",
+      "Не вигадуй OEM/стандарти без впевненості.",
+      ...(sourceDocs.length ? ["sourceDocuments надані користувачем — використовуй їх як першоджерело."] : []),
+    ],
+    responseSchema: {
+      correctName: "string",
+      categories: ["string"],
+      pack: "string (літри, число без одиниць)",
         tolerances: "string",
+        viscosities: "string",
         synonyms: ["string"],
-        detailBody: "string",
-        notes: "string",
-        confidence: {
-          correctName: 0,
-          categories: 0,
-          pack: 0,
+      detailBody: "string",
+      notes: "string",
+      confidence: {
+        correctName: 0,
+        categories: 0,
+        pack: 0,
           tolerances: 0,
+          viscosities: 0,
           synonyms: 0,
-          detailBody: 0,
-        },
+        detailBody: 0,
       },
     },
-    null,
-    2
-  );
+  };
+
+  if (sourceDocs.length) {
+    payload.sourceDocuments = sourceDocs.map((d, i) => ({
+      index: i + 1,
+      url: d.url,
+      text: d.text,
+    }));
+  }
+
+  return JSON.stringify(payload, null, 2);
 }
 
 const SYSTEM_PROMPT =
@@ -331,6 +420,7 @@ exports.suggestProductEnrichment = onCall(
       id,
       missingFields,
       includeDetailBody = true,
+      sourceUrls = [],
     } = request.data || {};
 
     const cleanProductDocId = str(productDocId, 200);
@@ -392,6 +482,16 @@ exports.suggestProductEnrichment = onCall(
       };
     }
 
+    const rawSourceUrls = Array.isArray(sourceUrls) ? sourceUrls : [];
+    const sourceDocs = rawSourceUrls.length ? await fetchSourceUrls(rawSourceUrls) : [];
+    if (rawSourceUrls.length) {
+      logger.info("Source URLs fetched", {
+        uid: request.auth.uid,
+        requested: rawSourceUrls.length,
+        fetched: sourceDocs.length,
+      });
+    }
+
     const userPrompt = buildPrompt({
       brand: productBrand,
       id: cleanId,
@@ -399,6 +499,7 @@ exports.suggestProductEnrichment = onCall(
       master,
       targetFields,
       categoryNames,
+      sourceDocs,
     });
 
     const { parsed, tokensUsed } = await callGemini(apiKey, SYSTEM_PROMPT, userPrompt);
@@ -412,6 +513,7 @@ exports.suggestProductEnrichment = onCall(
       uid: request.auth.uid,
       productDocId: cleanProductDocId,
       targetFields,
+      sourceUrlsCount: sourceDocs.length,
       tokensUsed,
     });
 

@@ -45,6 +45,8 @@ const ProductCatalog = ({
         pack: productRow.pack || "",
         tolerances: productRow.tolerances || "",
         toleranceTags: Array.isArray(productRow.toleranceTags) ? productRow.toleranceTags : [],
+        viscosities: productRow.viscosities || "",
+        viscosityTags: Array.isArray(productRow.viscosityTags) ? productRow.viscosityTags : [],
       });
       setDetailBody('');
       setDetailImageUrl('');

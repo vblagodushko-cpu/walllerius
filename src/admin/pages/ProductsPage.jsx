@@ -34,6 +34,13 @@ import {
   formatToleranceTags,
   normalizeToleranceTagsInput,
 } from "../../utils/tolerances.js";
+import {
+  VISCOSITY_SYSTEMS,
+  buildViscosityTag,
+  formatViscosityTags,
+  normalizeViscosityTagsInput,
+  VISCOSITY_FILTER_PROFILES,
+} from "../../utils/viscosities.js";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -51,6 +58,7 @@ const MASTER_FIELD_OPTIONS = [
   { key: "categories", label: "Категорії" },
   { key: "pack", label: "Фасування" },
   { key: "tolerances", label: "Допуски" },
+  { key: "viscosities", label: "В'язкість" },
   { key: "synonyms", label: "Синоніми" },
 ];
 const MASTER_FIELD_LABELS = Object.fromEntries(
@@ -103,6 +111,7 @@ function getMissingMasterFields(data, selectedFields) {
     if (field === "categories") return !Array.isArray(data.categories) || data.categories.length === 0;
     if (field === "pack") return !String(data.pack || "").trim();
     if (field === "tolerances") return !String(data.tolerances || "").trim();
+    if (field === "viscosities") return !String(data.viscosities || "").trim();
     if (field === "synonyms") return !Array.isArray(data.synonyms) || data.synonyms.length === 0;
     return false;
   });
@@ -187,6 +196,8 @@ export default function ProductsPage() {
     pack: "",
     tolerances: "",
     toleranceTagsText: "",
+    viscosities: "",
+    viscosityTagsText: "",
     synonymsText: "",
   });
   const [loadingMasterData, setLoadingMasterData] = useState(false);
@@ -206,6 +217,9 @@ export default function ProductsPage() {
   const [pendingImageFile, setPendingImageFile] = useState(null);
   const [removeDetailImage, setRemoveDetailImage] = useState(false);
   const [toleranceSearch, setToleranceSearch] = useState("");
+  const [viscositySearch, setViscositySearch] = useState("");
+  /** "main" — картка; "specs" — допуски та в'язкість */
+  const [masterModalTab, setMasterModalTab] = useState("main");
 
   // Моніторинг заповненості master-даних
   const [masterMonitorSupplier, setMasterMonitorSupplier] = useState("Мій склад");
@@ -525,6 +539,8 @@ export default function ProductsPage() {
     setDetailImageStoragePath("");
     setDetailImageThumbStoragePath("");
     setToleranceSearch("");
+    setViscositySearch("");
+    setMasterModalTab("main");
     clearDetailImageDraft();
     setMasterForm({
       correctName: product.name || "",
@@ -532,6 +548,8 @@ export default function ProductsPage() {
       pack: product.pack || "",
       tolerances: product.tolerances || "",
       toleranceTagsText: formatToleranceTags(product.toleranceTags),
+      viscosities: product.viscosities || "",
+      viscosityTagsText: formatViscosityTags(product.viscosityTags),
       synonymsText: joinTextList(product.synonyms),
     });
 
@@ -555,6 +573,8 @@ export default function ProductsPage() {
           pack: md.pack || "",
           tolerances: md.tolerances || "",
           toleranceTagsText: formatToleranceTags(md.toleranceTags || product.toleranceTags),
+          viscosities: md.viscosities || "",
+          viscosityTagsText: formatViscosityTags(md.viscosityTags || product.viscosityTags),
           synonymsText: joinTextList(md.synonyms),
         });
       }
@@ -596,6 +616,8 @@ export default function ProductsPage() {
     setDetailImageStoragePath("");
     setDetailImageThumbStoragePath("");
     setToleranceSearch("");
+    setViscositySearch("");
+    setMasterModalTab("main");
     clearDetailImageDraft();
   }, [clearDetailImageDraft]);
 
@@ -612,6 +634,7 @@ export default function ProductsPage() {
         categories: masterForm.categories,
         pack: masterForm.pack,
         tolerances: masterForm.tolerances,
+        viscosities: masterForm.viscosities,
         synonyms: splitTextList(masterForm.synonymsText),
       };
       const missingFields = getMissingMasterFields(
@@ -688,6 +711,15 @@ export default function ProductsPage() {
             : formatToleranceTags(suggestion.toleranceTags),
         }));
       }
+      if (fieldsToApply.viscosities && suggestion.viscosities) {
+        setMasterForm((prev) => ({
+          ...prev,
+          viscosities: prev.viscosities.trim() ? prev.viscosities : suggestion.viscosities,
+          viscosityTagsText: prev.viscosityTagsText.trim()
+            ? prev.viscosityTagsText
+            : formatViscosityTags(suggestion.viscosityTags),
+        }));
+      }
       if (fieldsToApply.synonyms && Array.isArray(suggestion.synonyms) && suggestion.synonyms.length) {
         setMasterForm((prev) => ({
           ...prev,
@@ -698,6 +730,13 @@ export default function ProductsPage() {
       }
       if (fieldsToApply.detailBody && suggestion.detailBody && !detailBody.trim()) {
         setDetailBody(suggestion.detailBody);
+      }
+
+      if (
+        (fieldsToApply.tolerances && suggestion.tolerances) ||
+        (fieldsToApply.viscosities && suggestion.viscosities)
+      ) {
+        setMasterModalTab("specs");
       }
 
       setStatusMessage({ type: "success", text: "AI-пропозицію застосовано до форми. Перевірте та натисніть «Зберегти»." });
@@ -798,6 +837,51 @@ export default function ProductsPage() {
       .filter((cfg) => cfg.options.length > 0);
   }, [toleranceSearch, toleranceSystemOrder]);
 
+  const selectedViscosityTags = useMemo(
+    () => normalizeViscosityTagsInput(masterForm.viscosityTagsText),
+    [masterForm.viscosityTagsText]
+  );
+
+  const selectedViscosityTagSet = useMemo(
+    () => new Set(selectedViscosityTags),
+    [selectedViscosityTags]
+  );
+
+  const specsTagsCount = useMemo(
+    () => selectedToleranceTags.length + selectedViscosityTags.length,
+    [selectedToleranceTags.length, selectedViscosityTags.length]
+  );
+
+  const viscositySystemOrder = useMemo(() => {
+    const preferred = [];
+    masterForm.categories.forEach((category) => {
+      const profile = VISCOSITY_FILTER_PROFILES[category];
+      if (Array.isArray(profile)) preferred.push(...profile);
+    });
+    const allSystems = Object.keys(VISCOSITY_SYSTEMS);
+    const ordered = [...new Set([...preferred, ...allSystems])];
+    return ordered.filter((system) => VISCOSITY_SYSTEMS[system]);
+  }, [masterForm.categories]);
+
+  const visibleViscositySystems = useMemo(() => {
+    const q = viscositySearch.trim().toUpperCase();
+    return viscositySystemOrder
+      .map((system) => {
+        const cfg = VISCOSITY_SYSTEMS[system];
+        const options = cfg.options
+          .map((code) => ({ code, tag: buildViscosityTag(system, code) }))
+          .filter(({ code, tag }) =>
+            !q ||
+            system.includes(q) ||
+            String(cfg.label || "").toUpperCase().includes(q) ||
+            code.toUpperCase().includes(q) ||
+            tag.includes(q)
+          );
+        return { system, ...cfg, options };
+      })
+      .filter((cfg) => cfg.options.length > 0);
+  }, [viscositySearch, viscositySystemOrder]);
+
   const handleRemoveDetailImage = useCallback(() => {
     clearDetailImageDraft();
     setRemoveDetailImage(true);
@@ -840,6 +924,41 @@ export default function ProductsPage() {
     }
   }, [selectedToleranceTags]);
 
+  const setViscosityTags = useCallback((tags) => {
+    setMasterForm((prev) => ({
+      ...prev,
+      viscosityTagsText: formatViscosityTags(normalizeViscosityTagsInput(tags)),
+    }));
+  }, []);
+
+  const toggleViscosityTag = useCallback((tag) => {
+    setMasterForm((prev) => {
+      const tags = normalizeViscosityTagsInput(prev.viscosityTagsText);
+      const next = new Set(tags);
+      if (next.has(tag)) {
+        next.delete(tag);
+      } else {
+        next.add(tag);
+      }
+      return {
+        ...prev,
+        viscosityTagsText: formatViscosityTags(Array.from(next)),
+      };
+    });
+  }, []);
+
+  const handleCopyViscosityTags = useCallback(async () => {
+    const text = formatViscosityTags(selectedViscosityTags);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatusMessage({ type: "success", text: "Масив в'язкостей скопійовано." });
+    } catch (e) {
+      console.warn("Clipboard copy failed", e);
+      setStatusMessage({ type: "error", text: "Не вдалося скопіювати в'язкості." });
+    }
+  }, [selectedViscosityTags]);
+
   const handleSaveMasterData = useCallback(async () => {
     if (!masterModalProduct) return;
 
@@ -855,6 +974,8 @@ export default function ProductsPage() {
         pack: masterForm.pack,
         tolerances: masterForm.tolerances,
         toleranceTags: normalizeToleranceTagsInput(masterForm.toleranceTagsText),
+        viscosities: masterForm.viscosities,
+        viscosityTags: normalizeViscosityTagsInput(masterForm.viscosityTagsText),
         synonyms: splitTextList(masterForm.synonymsText),
       });
 
@@ -864,6 +985,8 @@ export default function ProductsPage() {
         pack: masterForm.pack,
         tolerances: masterForm.tolerances,
         toleranceTags: normalizeToleranceTagsInput(masterForm.toleranceTagsText),
+        viscosities: masterForm.viscosities,
+        viscosityTags: normalizeViscosityTagsInput(masterForm.viscosityTagsText),
         synonyms: splitTextList(masterForm.synonymsText),
       };
       applyProductPatch(masterModalProduct.docId, productPatch);
@@ -1069,6 +1192,8 @@ export default function ProductsPage() {
       pack: row.pack || "",
       tolerances: row.tolerances || "",
       toleranceTags: Array.isArray(row.toleranceTags) ? row.toleranceTags : [],
+      viscosities: row.viscosities || "",
+      viscosityTags: Array.isArray(row.viscosityTags) ? row.viscosityTags : [],
       synonyms: Array.isArray(row.synonyms) ? row.synonyms : [],
     });
   }, [openMasterModal]);
@@ -1558,6 +1683,8 @@ export default function ProductsPage() {
             pack: row.pack,
             tolerances: row.tolerances,
             toleranceTags: row.toleranceTags,
+            viscosities: row.viscosities,
+            viscosityTags: row.viscosityTags,
             synonyms: row.synonyms,
           },
           offers: [row],
@@ -2646,11 +2773,43 @@ export default function ProductsPage() {
                 </div>
               )}
 
+              {!loadingMasterData && (
+                <div className="flex gap-1 border-b border-slate-200">
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      masterModalTab === "main"
+                        ? "border-emerald-600 text-emerald-700"
+                        : "border-transparent text-slate-500 hover:text-slate-700"
+                    }`}
+                    onClick={() => setMasterModalTab("main")}
+                  >
+                    Основне
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      masterModalTab === "specs"
+                        ? "border-emerald-600 text-emerald-700"
+                        : "border-transparent text-slate-500 hover:text-slate-700"
+                    }`}
+                    onClick={() => setMasterModalTab("specs")}
+                  >
+                    Характеристики
+                    {specsTagsCount > 0 && (
+                      <span className="ml-1.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-600">
+                        {specsTagsCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              )}
+
               {loadingMasterData ? (
                 <div className="py-8 text-center text-slate-500">
                   Завантаження master-даних...
                 </div>
-              ) : (
+              ) : masterModalTab === "main" ? (
                 <>
                   <div>
                     <label className="block text-xs text-slate-600 mb-1">
@@ -2720,128 +2879,6 @@ export default function ProductsPage() {
                           }))
                         }
                       />
-                    </div>
-                  </div>
-
-                  <div className="border-t border-slate-200 pt-4 space-y-3">
-                    <div>
-                      <label className="block text-xs text-slate-600 mb-1">
-                        Допуски / tolerances (текст для картки)
-                      </label>
-                      <textarea
-                        className="w-full px-3 py-2 border rounded-lg min-h-[76px] text-sm"
-                        value={masterForm.tolerances}
-                        onChange={(e) =>
-                          setMasterForm((prev) => ({
-                            ...prev,
-                            tolerances: e.target.value,
-                          }))
-                        }
-                        placeholder="Напр.: ACEA C3, API SP, MB 229.52, VW 504.00/507.00"
-                      />
-                      <p className="mt-1 text-xs text-slate-500">
-                        Це поле показується людині. Для фільтрів нижче формується масив
-                        <code className="mx-1 rounded bg-slate-100 px-1">toleranceTags</code>.
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-semibold text-slate-800">Стандартні допуски</div>
-                          <div className="text-xs text-slate-500">
-                            Оберіть галочками або вставте готовий рядок тегів нижче.
-                          </div>
-                        </div>
-                        <input
-                          className="w-full sm:w-64 px-3 py-2 border rounded-lg bg-white text-sm"
-                          value={toleranceSearch}
-                          onChange={(e) => setToleranceSearch(e.target.value)}
-                          placeholder="Пошук: C3, 229.52, VW..."
-                        />
-                      </div>
-
-                      <div className="max-h-64 overflow-auto space-y-3 pr-1">
-                        {visibleToleranceSystems.map((cfg) => (
-                          <div key={cfg.system} className="rounded-lg border bg-white p-2">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              <div className="text-xs font-semibold text-slate-700">
-                                {cfg.label || cfg.system}
-                              </div>
-                              <div className="text-[11px] text-slate-400">{cfg.system}</div>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {cfg.options.map(({ code, tag }) => {
-                                const checked = selectedToleranceTagSet.has(tag);
-                                return (
-                                  <label
-                                    key={tag}
-                                    className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs cursor-pointer ${
-                                      checked
-                                        ? "border-indigo-200 bg-indigo-50 text-indigo-700"
-                                        : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="h-3 w-3"
-                                      checked={checked}
-                                      onChange={() => toggleToleranceTag(tag)}
-                                    />
-                                    <span>{code}</span>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                        {!visibleToleranceSystems.length && (
-                          <div className="rounded-lg border bg-white p-4 text-center text-sm text-slate-500">
-                            Нічого не знайдено за цим запитом.
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="mt-3">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <label className="text-xs text-slate-600">
-                            Масив допусків для копіювання / вставки
-                          </label>
-                          <button
-                            type="button"
-                            className="rounded bg-white px-2 py-1 text-xs text-indigo-700 border border-indigo-100 hover:bg-indigo-50 disabled:opacity-50"
-                            onClick={handleCopyToleranceTags}
-                            disabled={!selectedToleranceTags.length}
-                          >
-                            Скопіювати
-                          </button>
-                        </div>
-                        <textarea
-                          className="w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
-                          value={masterForm.toleranceTagsText}
-                          onChange={(e) =>
-                            setMasterForm((prev) => ({
-                              ...prev,
-                              toleranceTagsText: e.target.value,
-                            }))
-                          }
-                          onBlur={() => setToleranceTags(masterForm.toleranceTagsText)}
-                          placeholder="ACEA:C3, API:SP, MB:229.52"
-                        />
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {selectedToleranceTags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-indigo-700 text-[11px] font-medium"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                          {!selectedToleranceTags.length && (
-                            <span className="text-xs text-slate-400">Допуски для фільтра ще не обрано.</span>
-                          )}
-                        </div>
-                      </div>
                     </div>
                   </div>
 
@@ -2952,6 +2989,252 @@ export default function ProductsPage() {
                     >
                       {deletingMasterData ? "Видалення..." : "Видалити master-дані"}
                     </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">
+                        Допуски / tolerances (текст для картки)
+                      </label>
+                      <textarea
+                        className="w-full px-3 py-2 border rounded-lg min-h-[76px] text-sm"
+                        value={masterForm.tolerances}
+                        onChange={(e) =>
+                          setMasterForm((prev) => ({
+                            ...prev,
+                            tolerances: e.target.value,
+                          }))
+                        }
+                        placeholder="Напр.: ACEA C3, API SP, MB 229.52, VW 504.00/507.00"
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Це поле показується людині. Для фільтрів нижче формується масив
+                        <code className="mx-1 rounded bg-slate-100 px-1">toleranceTags</code>.
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-slate-800">Стандартні допуски</div>
+                          <div className="text-xs text-slate-500">
+                            Оберіть галочками або вставте готовий рядок тегів нижче.
+                          </div>
+                        </div>
+                        <input
+                          className="w-full sm:w-64 px-3 py-2 border rounded-lg bg-white text-sm"
+                          value={toleranceSearch}
+                          onChange={(e) => setToleranceSearch(e.target.value)}
+                          placeholder="Пошук: C3, 229.52, VW..."
+                        />
+                      </div>
+
+                      <div className="max-h-72 overflow-auto space-y-3 pr-1">
+                        {visibleToleranceSystems.map((cfg) => (
+                          <div key={cfg.system} className="rounded-lg border bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <div className="text-xs font-semibold text-slate-700">
+                                {cfg.label || cfg.system}
+                              </div>
+                              <div className="text-[11px] text-slate-400">{cfg.system}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {cfg.options.map(({ code, tag }) => {
+                                const checked = selectedToleranceTagSet.has(tag);
+                                return (
+                                  <label
+                                    key={tag}
+                                    className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs cursor-pointer ${
+                                      checked
+                                        ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                        : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-3 w-3"
+                                      checked={checked}
+                                      onChange={() => toggleToleranceTag(tag)}
+                                    />
+                                    <span>{code}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        {!visibleToleranceSystems.length && (
+                          <div className="rounded-lg border bg-white p-4 text-center text-sm text-slate-500">
+                            Нічого не знайдено за цим запитом.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label className="text-xs text-slate-600">
+                            Масив допусків для копіювання / вставки
+                          </label>
+                          <button
+                            type="button"
+                            className="rounded bg-white px-2 py-1 text-xs text-indigo-700 border border-indigo-100 hover:bg-indigo-50 disabled:opacity-50"
+                            onClick={handleCopyToleranceTags}
+                            disabled={!selectedToleranceTags.length}
+                          >
+                            Скопіювати
+                          </button>
+                        </div>
+                        <textarea
+                          className="w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
+                          value={masterForm.toleranceTagsText}
+                          onChange={(e) =>
+                            setMasterForm((prev) => ({
+                              ...prev,
+                              toleranceTagsText: e.target.value,
+                            }))
+                          }
+                          onBlur={() => setToleranceTags(masterForm.toleranceTagsText)}
+                          placeholder="ACEA:C3, API:SP, MB:229.52"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {selectedToleranceTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-indigo-700 text-[11px] font-medium"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {!selectedToleranceTags.length && (
+                            <span className="text-xs text-slate-400">Допуски для фільтра ще не обрано.</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-slate-200 pt-4 space-y-3">
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">
+                        В'язкість / viscosities (текст для картки)
+                      </label>
+                      <textarea
+                        className="w-full px-3 py-2 border rounded-lg min-h-[76px] text-sm"
+                        value={masterForm.viscosities}
+                        onChange={(e) =>
+                          setMasterForm((prev) => ({
+                            ...prev,
+                            viscosities: e.target.value,
+                          }))
+                        }
+                        placeholder="Напр.: SAE 5W-30, ISO VG 46"
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Для фільтрів нижче формується масив
+                        <code className="mx-1 rounded bg-slate-100 px-1">viscosityTags</code>.
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-slate-800">Стандартні класи в'язкості</div>
+                          <div className="text-xs text-slate-500">
+                            SAE та ISO VG — галочками або вставте рядок тегів нижче.
+                          </div>
+                        </div>
+                        <input
+                          className="w-full sm:w-64 px-3 py-2 border rounded-lg bg-white text-sm"
+                          value={viscositySearch}
+                          onChange={(e) => setViscositySearch(e.target.value)}
+                          placeholder="Пошук: 5W-30, 46, SAE..."
+                        />
+                      </div>
+
+                      <div className="max-h-72 overflow-auto space-y-3 pr-1">
+                        {visibleViscositySystems.map((cfg) => (
+                          <div key={cfg.system} className="rounded-lg border bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <div className="text-xs font-semibold text-slate-700">
+                                {cfg.label || cfg.system}
+                              </div>
+                              <div className="text-[11px] text-slate-400">{cfg.system}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {cfg.options.map(({ code, tag }) => {
+                                const checked = selectedViscosityTagSet.has(tag);
+                                return (
+                                  <label
+                                    key={tag}
+                                    className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs cursor-pointer ${
+                                      checked
+                                        ? "border-teal-200 bg-teal-50 text-teal-700"
+                                        : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-3 w-3"
+                                      checked={checked}
+                                      onChange={() => toggleViscosityTag(tag)}
+                                    />
+                                    <span>{code}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        {!visibleViscositySystems.length && (
+                          <div className="rounded-lg border bg-white p-4 text-center text-sm text-slate-500">
+                            Нічого не знайдено за цим запитом.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <label className="text-xs text-slate-600">
+                            Масив в'язкостей для копіювання / вставки
+                          </label>
+                          <button
+                            type="button"
+                            className="rounded bg-white px-2 py-1 text-xs text-teal-700 border border-teal-100 hover:bg-teal-50 disabled:opacity-50"
+                            onClick={handleCopyViscosityTags}
+                            disabled={!selectedViscosityTags.length}
+                          >
+                            Скопіювати
+                          </button>
+                        </div>
+                        <textarea
+                          className="w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
+                          value={masterForm.viscosityTagsText}
+                          onChange={(e) =>
+                            setMasterForm((prev) => ({
+                              ...prev,
+                              viscosityTagsText: e.target.value,
+                            }))
+                          }
+                          onBlur={() => setViscosityTags(masterForm.viscosityTagsText)}
+                          placeholder="SAE:5W-30, ISO:46"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {selectedViscosityTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="rounded-full bg-teal-50 border border-teal-100 px-2 py-0.5 text-teal-700 text-[11px] font-medium"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {!selectedViscosityTags.length && (
+                            <span className="text-xs text-slate-400">В'язкість для фільтра ще не обрана.</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </>
               )}

@@ -1570,9 +1570,17 @@ function PortalApp() {
                               }
                             }}
                           >
-                            <span>{group.name || group.id}</span>
+                            <span className="flex items-center gap-1.5 min-w-0 truncate">
+                              <span className="truncate">{group.name || group.id}</span>
+                              {group.badge && (
+                                <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full text-white leading-none ${
+                                  group.badgeColor === 'green' ? 'bg-green-500' :
+                                  group.badgeColor === 'orange' ? 'bg-orange-500' : 'bg-red-500'
+                                }`}>{group.badge}</span>
+                              )}
+                            </span>
                             {groupType === 'preset' && group.brands && group.brands.length > 1 && (
-                              <span className="text-[10px] text-gray-400">▼</span>
+                              <span className="text-[10px] text-gray-400 shrink-0">▼</span>
                             )}
                           </button>
                           {isExpanded && groupType === 'preset' && group.brands && group.brands.length > 1 && (

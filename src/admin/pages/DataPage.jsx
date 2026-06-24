@@ -58,6 +58,26 @@ const normId = (v) => {
 };
 const normPhone = (s) => String(s || "").replace(/\D/g, "");
 
+const splitCsvList = (value) =>
+  String(value || "")
+    .split(/[,;\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const MASTER_XLSX_COLUMNS = {
+  brand: "Бренд",
+  id: "Артикул",
+  correctName: "Правильна назва",
+  categories: "Категорії",
+  pack: "Фасування",
+  tolerances: "Допуски",
+  toleranceTags: "Теги допусків",
+  viscosities: "В'язкість",
+  viscosityTags: "Теги в'язкості",
+  synonyms: "Синоніми артикулів",
+  detailBody: "Детальний опис",
+};
+
 // Безпечний docId для Firestore: прибирає / . # $ [ ] та нормалізує прогалини
 const safeDocId = (s) =>
   String(s ?? "")
@@ -562,6 +582,7 @@ function ImportProductMasterData({ setStatus }) {
   const [count, setCount] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const exportAllMasterData = async () => {
     if (!window.XLSX) {
@@ -570,29 +591,35 @@ function ImportProductMasterData({ setStatus }) {
     }
     setExportingAll(true);
     try {
-      const snap = await getDocs(collection(db, `/artifacts/${appId}/public/data/productMasterData`));
-      if (snap.empty) {
+      const call = httpsCallable(functions, "exportProductMasterDataForExcel");
+      const { data } = await call({});
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      if (!rows.length) {
         setStatus?.({ type: "success", message: "Майстер-дані порожні" });
         return;
       }
-      const data = snap.docs.map(d => {
-        const r = d.data();
-        return {
-          "Бренд": r.brand ?? "",
-          "Артикул": r.id ?? "",
-          "Правильна назва": r.correctName ?? "",
-          "Категорії": Array.isArray(r.categories) ? r.categories.join(", ") : (r.categories ?? ""),
-          "Фасування": r.pack ?? "",
-          "Допуски": r.tolerances ?? "",
-          "Синоніми артикулів": Array.isArray(r.synonyms) ? r.synonyms.join(", ") : (r.synonyms ?? ""),
-        };
-      });
+      const sheetRows = rows.map((r) => ({
+        [MASTER_XLSX_COLUMNS.brand]: r.brand ?? "",
+        [MASTER_XLSX_COLUMNS.id]: r.id ?? "",
+        [MASTER_XLSX_COLUMNS.correctName]: r.correctName ?? "",
+        [MASTER_XLSX_COLUMNS.categories]: r.categories ?? "",
+        [MASTER_XLSX_COLUMNS.pack]: r.pack ?? "",
+        [MASTER_XLSX_COLUMNS.tolerances]: r.tolerances ?? "",
+        [MASTER_XLSX_COLUMNS.toleranceTags]: r.toleranceTags ?? "",
+        [MASTER_XLSX_COLUMNS.viscosities]: r.viscosities ?? "",
+        [MASTER_XLSX_COLUMNS.viscosityTags]: r.viscosityTags ?? "",
+        [MASTER_XLSX_COLUMNS.synonyms]: r.synonyms ?? "",
+        [MASTER_XLSX_COLUMNS.detailBody]: r.detailBody ?? "",
+      }));
 
-      const ws = window.XLSX.utils.json_to_sheet(data);
+      const ws = window.XLSX.utils.json_to_sheet(sheetRows);
       const wb = window.XLSX.utils.book_new();
       window.XLSX.utils.book_append_sheet(wb, ws, "Майстер-дані");
       window.XLSX.writeFile(wb, `master-data-${Date.now()}.xlsx`);
-      setStatus?.({ type: "success", message: `Експортовано ${data.length} записів майстер-даних` });
+      setStatus?.({
+        type: "success",
+        message: `Експортовано ${sheetRows.length} записів (з описами, допусками та в'язкістю)`,
+      });
     } catch (e) {
       setStatus?.({ type: "error", message: e?.message || "Помилка експорту" });
     } finally {
@@ -638,17 +665,21 @@ function ImportProductMasterData({ setStatus }) {
       }
 
       const dataRows = all.map((row) => ({
-        "Бренд": row.brand,
-        "Артикул": row.id,
+        [MASTER_XLSX_COLUMNS.brand]: row.brand,
+        [MASTER_XLSX_COLUMNS.id]: row.id,
         "Назва (з каталогу)": row.name,
         "Постачальник": row.supplier ?? "Мій склад",
         "Залишок": row.stock,
         "Бракує": (row.missingFields || []).join(", "),
-        "Синоніми артикулів": "",
-        "Правильна назва": "",
-        "Допуски": "",
-        "Категорії": "",
-        "Фасування": "",
+        [MASTER_XLSX_COLUMNS.synonyms]: "",
+        [MASTER_XLSX_COLUMNS.correctName]: "",
+        [MASTER_XLSX_COLUMNS.tolerances]: "",
+        [MASTER_XLSX_COLUMNS.toleranceTags]: "",
+        [MASTER_XLSX_COLUMNS.viscosities]: "",
+        [MASTER_XLSX_COLUMNS.viscosityTags]: "",
+        [MASTER_XLSX_COLUMNS.categories]: "",
+        [MASTER_XLSX_COLUMNS.pack]: "",
+        [MASTER_XLSX_COLUMNS.detailBody]: "",
       }));
 
       const ws = window.XLSX.utils.json_to_sheet(dataRows);
@@ -691,18 +722,38 @@ function ImportProductMasterData({ setStatus }) {
         const iCats = pick("категор","category","categories");
         const iPack = pick("фасув","pack","packaging");
         const iTol  = pick("допуск","toler","approvals","approval");
+        const iTolTags = pick("теги допуск", "tolerance tag", "tolerancetag");
+        const iVisc = pick("в'язк", "вязк", "viscos", "viscosity");
+        const iViscTags = pick("теги в'язк", "теги вязк", "viscosity tag", "viscositytag");
         const iSyn  = pick("синонім","synonym");
+        const iDetail = pick("детальн", "опис", "detailbody", "detail body");
 
         const recs = body.map(r => {
           const brand = String(r[iBrand]||"").trim();
           const id = normId(r[iId]);
           if (!brand || !id) return null;
           const correctName = iName>=0 ? String(r[iName]||"").trim() : "";
-          const categories = iCats>=0 ? String(r[iCats]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
+          const categories = iCats>=0 ? splitCsvList(r[iCats]) : [];
           const pack = iPack>=0 ? String(r[iPack]||"").trim() : "";
           const tolerances = iTol>=0 ? String(r[iTol]||"").trim() : "";
-          const synonyms = iSyn>=0 ? String(r[iSyn]||"").split(/[,;]+/).map(s=>s.trim()).filter(Boolean) : [];
-          return { brand, id, correctName, categories, pack, tolerances, synonyms };
+          const toleranceTags = iTolTags>=0 ? splitCsvList(r[iTolTags]) : [];
+          const viscosities = iVisc>=0 ? String(r[iVisc]||"").trim() : "";
+          const viscosityTags = iViscTags>=0 ? splitCsvList(r[iViscTags]) : [];
+          const synonyms = iSyn>=0 ? splitCsvList(r[iSyn]) : [];
+          const detailBody = iDetail>=0 ? String(r[iDetail]||"").trim() : "";
+          return {
+            brand,
+            id,
+            correctName,
+            categories,
+            pack,
+            tolerances,
+            toleranceTags,
+            viscosities,
+            viscosityTags,
+            synonyms,
+            detailBody,
+          };
         }).filter(Boolean);
 
         resolve(recs);
@@ -714,54 +765,62 @@ function ImportProductMasterData({ setStatus }) {
     reader.readAsBinaryString(file);
   });
 
-  const clearMasterCache = async () => {
+  const runMasterImport = async (fileOrRecs, mode) => {
+    setImporting(true);
     try {
-      const clearCache = httpsCallable(functions, "clearMasterDataCache");
-      await clearCache();
-    } catch (cacheErr) {
-      console.warn("Failed to clear master data cache:", cacheErr);
+      const recs = Array.isArray(fileOrRecs) ? fileOrRecs : await parseMasterXlsx(fileOrRecs);
+      const call = httpsCallable(functions, "bulkImportProductMasterData");
+      const { data } = await call({ records: recs, mode });
+      setCount(data?.imported ?? recs.length);
+      const parts = [
+        `імпортовано master: ${data?.imported ?? recs.length}`,
+        data?.syncedProducts != null ? `оновлено товарів: ${data.syncedProducts}` : null,
+        data?.syncedDetails ? `описів: ${data.syncedDetails}` : null,
+        data?.deleted ? `видалено: ${data.deleted}` : null,
+        data?.skipped ? `пропущено: ${data.skipped}` : null,
+      ].filter(Boolean);
+      setStatus?.({
+        type: "success",
+        message: mode === "strict"
+          ? `Строгий синхрон — ${parts.join(", ")}`
+          : `Часткове оновлення — ${parts.join(", ")}`,
+      });
+    } catch (e) {
+      setStatus?.({ type: "error", message: e?.message || "Помилка обробки файлу" });
+    } finally {
+      setImporting(false);
     }
   };
 
   // Строгий синк: оновлює подані + видаляє відсутні
-  const onFile = (ev) => {
+  const onFile = async (ev) => {
     const f = ev.target.files?.[0];
     ev.target.value = "";
     if (!f) return;
-    (async () => {
-      try {
-        const recs = await parseMasterXlsx(f);
 
-        const seenDocIds = new Set(recs.map(r => `${r.brand}__${r.id}`));
-        await batchedSet(`/artifacts/${appId}/public/data/productMasterData`, recs, (r) => `${r.brand}__${r.id}`);
+    let recs;
+    try {
+      recs = await parseMasterXlsx(f);
+    } catch (e) {
+      setStatus?.({ type: "error", message: e?.message || "Не вдалося прочитати файл" });
+      return;
+    }
 
-        let deletedCount = 0;
-        if (seenDocIds.size > 0) {
-          const masterDataCol = collection(db, `/artifacts/${appId}/public/data/productMasterData`);
-          const snap = await getDocs(masterDataCol);
-          if (snap.size > 0) {
-            const BATCH_LIMIT = 500;
-            let batch = writeBatch(db);
-            let ops = 0;
-            for (const d of snap.docs) {
-              if (!seenDocIds.has(d.id)) {
-                batch.delete(d.ref);
-                ops++;
-                deletedCount++;
-                if (ops >= BATCH_LIMIT) { await batch.commit(); batch = writeBatch(db); ops = 0; }
-              }
-            }
-            if (ops > 0) await batch.commit();
-          }
-        }
+    const rowHint =
+      recs.length === 0
+        ? "\n\n⚠️ У файлі немає жодного валідного рядка — будуть ВИДАЛЕНІ ВСІ майстер-дані!"
+        : `\n\nУ файлі знайдено записів: ${recs.length}. Усі master-записи, яких немає у файлі, будуть видалені.`;
 
-        setCount(recs.length);
-        await clearMasterCache();
-        setStatus?.({ type: "success", message: deletedCount > 0 ? `Імпортовано: ${recs.length}, видалено: ${deletedCount}` : `Імпортовано: ${recs.length}` });
-      } catch (e) {
-        setStatus?.({ type: "error", message: e?.message || "Помилка обробки файлу" });
-      }
-    })();
+    const confirmed = window.confirm(
+      "Строгий синхрон майстер-даних\n\n" +
+        "Режим «Обрати XLSX» оновлює дані з файлу та видаляє з бази ті записи productMasterData, яких у файлі немає.\n\n" +
+        "Якщо завантажити порожній файл або файл лише з частиною товарів — решта майстер-даних зникне без можливості відновити з UI." +
+        rowHint +
+        `\n\nПродовжити імпорт «${f.name}»?`
+    );
+    if (!confirmed) return;
+
+    runMasterImport(recs, "strict");
   };
 
   // Часткове оновлення: оновлює тільки подані, нічого не видаляє
@@ -769,16 +828,7 @@ function ImportProductMasterData({ setStatus }) {
     const f = ev.target.files?.[0];
     ev.target.value = "";
     if (!f) return;
-    (async () => {
-      try {
-        const recs = await parseMasterXlsx(f);
-        await batchedSet(`/artifacts/${appId}/public/data/productMasterData`, recs, (r) => `${r.brand}__${r.id}`);
-        await clearMasterCache();
-        setStatus?.({ type: "success", message: `Часткове оновлення: оновлено ${recs.length} товарів` });
-      } catch (e) {
-        setStatus?.({ type: "error", message: e?.message || "Помилка обробки файлу" });
-      }
-    })();
+    runMasterImport(f, "partial");
   };
 
   return (
@@ -798,28 +848,137 @@ function ImportProductMasterData({ setStatus }) {
         >
           {exporting ? "Експорт..." : "Експорт без master (Мій склад)"}
         </button>
-      <label className={`${secondary} cursor-pointer`}>
+      <label className={`${secondary} cursor-pointer ${importing ? "opacity-60 pointer-events-none" : ""}`}>
         Обрати XLSX
-        <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFile} />
+        <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFile} disabled={importing} />
       </label>
-      <label className={`${primary} cursor-pointer`}>
-        Часткове оновлення
-        <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFilePartial} />
+      <label className={`${primary} cursor-pointer ${importing ? "opacity-60 pointer-events-none" : ""}`}>
+        {importing ? "Імпорт..." : "Часткове оновлення"}
+        <input type="file" accept=".xlsx,.csv" className="hidden" onChange={onFilePartial} disabled={importing} />
       </label>
       </div>
     }>
       <div className="space-y-4">
-        {/* Формат файлу */}
+        {/* Туторіал */}
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+          <h4 className="text-sm font-semibold text-indigo-900 mb-3">📖 Туторіал: як заповнювати Excel і імпортувати назад</h4>
+          <ol className="text-sm text-indigo-950 space-y-3 list-decimal list-inside">
+            <li>
+              <b>Експорт.</b> Натисни «Експортувати майстер-дані» — отримаєш файл з усіма колонками, включно з{" "}
+              <b>Допуски</b>, <b>Теги допусків</b>, <b>В'язкість</b>, <b>Теги в'язкості</b>, <b>Детальний опис</b>.
+              Якщо колонка порожня — поле ще не заповнене в базі (можна додати в Excel).
+            </li>
+            <li>
+              <b>Редагування.</b> Не змінюй колонки <b>Бренд</b> і <b>Артикул</b> — по них система знаходить товар.
+              Решту колонок можна редагувати рядок за рядком. Один товар = один рядок.
+            </li>
+            <li>
+              <b>Імпорт назад.</b> Для звичайного масового оновлення використовуй{" "}
+              <b>«Часткове оновлення»</b> — оновлюються лише рядки з файлу, решта master-даних не чіпається.
+            </li>
+            <li>
+              <b>Резервна копія.</b> Перед експериментами збережи копію файлу. Кнопка «Обрати XLSX» — це{" "}
+              <b>строгий синхрон</b>: у файлі мають бути <b>усі</b> master-записи, інакше відсутні будуть видалені.
+            </li>
+          </ol>
+        </div>
+
+        {/* Довідник колонок */}
         <div>
-          <h4 className="text-sm font-semibold text-slate-700 mb-2">📋 Формат Excel файлу</h4>
-          <p className="text-sm text-slate-600 mb-2">
-            <b>Обов'язкові колонки:</b> <b>Бренд</b>, <b>Артикул</b>
+          <h4 className="text-sm font-semibold text-slate-700 mb-2">📋 Довідник колонок Excel</h4>
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="min-w-full text-xs text-left">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Колонка</th>
+                  <th className="px-3 py-2 font-semibold">Обов'язкова</th>
+                  <th className="px-3 py-2 font-semibold">Приклад</th>
+                  <th className="px-3 py-2 font-semibold">Куди зберігається</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                <tr><td className="px-3 py-2 font-medium">Бренд</td><td className="px-3 py-2">Так</td><td className="px-3 py-2">MOBIL</td><td className="px-3 py-2">Ключ пошуку (не змінювати)</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Артикул</td><td className="px-3 py-2">Так</td><td className="px-3 py-2">153668</td><td className="px-3 py-2">Ключ пошуку (id товару)</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Правильна назва</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">Mobil 1 ESP 5W-30 4L</td><td className="px-3 py-2">Назва в каталозі</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Категорії</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">Оливи моторні, Синтетика</td><td className="px-3 py-2">Через кому або крапку з комою</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Фасування</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">4 або 0.2</td><td className="px-3 py-2">Літри числом (pack)</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Допуски</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">ACEA C3, API SP, MB 229.52</td><td className="px-3 py-2">Текст на картці товару</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Теги допусків</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">ACEA:C3, API:SP, MB:229.52</td><td className="px-3 py-2">Для фільтрів; можна лишити порожнім — зберуться з «Допуски»</td></tr>
+                <tr><td className="px-3 py-2 font-medium">В'язкість</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">SAE 5W-30, ISO VG 46</td><td className="px-3 py-2">Текст на картці товару</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Теги в'язкості</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">SAE:5W-30, ISO:46</td><td className="px-3 py-2">Для фільтрів; можна лишити порожнім — зберуться з «В'язкість»</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Синоніми артикулів</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">153-668, 153668X</td><td className="px-3 py-2">Альтернативні коди для пошуку</td></tr>
+                <tr><td className="px-3 py-2 font-medium">Детальний опис</td><td className="px-3 py-2">Ні</td><td className="px-3 py-2">Довгий текст, переноси рядків</td><td className="px-3 py-2">Сторінка товару на порталі</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            Назви колонок розпізнаються гнучко (регістр не важливий). Достатньо, щоб заголовок містив ключове слово, напр. «в'язк», «допуск», «опис».
           </p>
-          <p className="text-sm text-slate-600 mb-2">
-            <b>Опційні колонки:</b> <b>Правильна назва</b>, <b>Категорії</b> (через кому), <b>Фасування</b>, <b>Допуски</b>, <b>Синоніми</b> (через кому)
-          </p>
-          <p className="text-xs text-slate-500">
-            Назви колонок розпізнаються автоматично (незалежно від регістру). Приклад: "Бренд", "Артикул", "Правильна назва", "Категорії", "Фасування", "Допуски", "Синоніми".
+        </div>
+
+        {/* Допуски та в'язкість */}
+        <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
+          <h4 className="text-sm font-semibold text-teal-900 mb-2">🛢️ Допуски та в'язкість — як заповнювати правильно</h4>
+          <div className="text-xs text-teal-950 space-y-3">
+            <p>
+              Для кожного поля є <b>два рівні</b>: людський текст (колонки «Допуски» / «В'язкість») і машинні теги
+              («Теги допусків» / «Теги в'язкості») для фільтрів у каталозі.
+            </p>
+            <div>
+              <p className="font-semibold mb-1">Варіант A — лише текст (простіший)</p>
+              <ul className="list-disc list-inside space-y-1 ml-1">
+                <li><b>Допуски:</b> <code className="bg-white/80 px-1 rounded">ACEA C3, API SP, VW 504.00/507.00</code></li>
+                <li><b>В'язкість:</b> <code className="bg-white/80 px-1 rounded">SAE 5W-30</code> або <code className="bg-white/80 px-1 rounded">ISO VG 46</code></li>
+                <li>Колонки тегів залиш порожніми — при імпорті система сама побудує теги з тексту.</li>
+              </ul>
+            </div>
+            <div>
+              <p className="font-semibold mb-1">Варіант B — текст + точні теги (для складних випадків)</p>
+              <ul className="list-disc list-inside space-y-1 ml-1">
+                <li>Формат тега: <code className="bg-white/80 px-1 rounded">СИСТЕМА:КОД</code>, кілька значень через кому.</li>
+                <li>Допуски: <code className="bg-white/80 px-1 rounded">ACEA:C3, API:SP, MB:229.52, VW:504.00</code></li>
+                <li>В'язкість SAE: <code className="bg-white/80 px-1 rounded">SAE:5W-30</code>, ISO VG: <code className="bg-white/80 px-1 rounded">ISO:46</code></li>
+                <li>Якщо теги заповнені — вони мають пріоритет над автопарсингом тексту.</li>
+              </ul>
+            </div>
+            <p className="text-teal-800">
+              При експорті колонки <b>В'язкість</b> і <b>Теги в'язкості</b> заповнюються з бази автоматично.
+              Якщо після експорту вони порожні — у модалці товару (Товари → ✏️) поле ще не було збережене.
+            </p>
+          </div>
+        </div>
+
+        {/* Інші поля */}
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+          <h4 className="text-sm font-semibold text-slate-800 mb-2">✏️ Інші поля — поради</h4>
+          <ul className="text-xs text-slate-700 space-y-2 list-disc list-inside">
+            <li>
+              <b>Категорії</b> — назви як у довіднику (Дані → Категорії), через кому:{" "}
+              <code className="bg-white px-1 rounded">Оливи моторні, Синтетика</code>.
+            </li>
+            <li>
+              <b>Фасування</b> — тільки число літрів: <code className="bg-white px-1 rounded">4</code>,{" "}
+              <code className="bg-white px-1 rounded">0.2</code>, <code className="bg-white px-1 rounded">1</code>.
+            </li>
+            <li>
+              <b>Детальний опис</b> — довгий текст у одній комірці; у Excel увімкни «перенос тексту».
+              Підтримуються переноси рядків (Alt+Enter). На порталі показується як текст (Markdown без HTML).
+            </li>
+            <li>
+              <b>Синоніми</b> — альтернативні артикули через кому; пробіли та дефіси нормалізуються при збереженні.
+            </li>
+            <li>
+              <b>Бренд</b> має збігатися з каталогом (регістр букв не критичний, але краще копіювати з експорту).
+            </li>
+          </ul>
+        </div>
+
+        {/* Формат файлу — коротко */}
+        <div>
+          <h4 className="text-sm font-semibold text-slate-700 mb-2">📁 Файл</h4>
+          <p className="text-sm text-slate-600">
+            Формат <b>.xlsx</b> або <b>.csv</b>, перший аркуш, перший рядок — заголовки.
+            Мінімум колонок: <b>Бренд</b> + <b>Артикул</b>.
           </p>
         </div>
 
@@ -854,7 +1013,7 @@ function ImportProductMasterData({ setStatus }) {
             </p>
             <ul className="list-disc list-inside ml-4 space-y-1">
               <li>Використовується <b>правильна назва</b> замість назви з прайсу</li>
-              <li>Підставляються <b>категорії</b>, <b>фасування</b>, <b>допуски</b></li>
+              <li>Підставляються <b>категорії</b>, <b>фасування</b>, <b>допуски</b>, <b>в'язкість</b> та теги для фільтрів</li>
               <li>Додаються <b>синоніми артикулів</b> (для пошуку)</li>
             </ul>
             <p className="ml-4">
@@ -877,7 +1036,7 @@ function ImportProductMasterData({ setStatus }) {
           </p>
           <ul className="text-xs text-blue-700 list-disc list-inside space-y-1">
             <li>Знайти товари, які потребують додавання майстер-даних</li>
-            <li>Заповнити правильні назви, категорії, допуски</li>
+            <li>Заповнити правильні назви, категорії, допуски, в'язкість, опис</li>
             <li>Додати синоніми артикулів</li>
             <li>Після заповнення — імпортувати файл назад</li>
           </ul>
@@ -887,9 +1046,10 @@ function ImportProductMasterData({ setStatus }) {
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
           <h4 className="text-sm font-semibold text-slate-700 mb-2">💰 Витрати на операції</h4>
           <div className="text-xs text-slate-600 space-y-1">
-            <p><b>Імпорт:</b> Reads = N (кількість документів у майстер-даних для cleanup) + M (записів у файлі для збереження). Writes = M (оновлення/додавання) + D (видалення).</p>
-            <p><b>Використання:</b> Кеш завантажується один раз на 5 хвилин, потім використовується з пам'яті (0 reads).</p>
-            <p><b>Експорт (без master):</b> виклики <code className="bg-slate-100 px-1 rounded">monitorProductMasterData</code> (по сторінках, до ~20 000 рядків).</p>
+            <p><b>Експорт майстер-даних:</b> читає всі master-записи, товари та описи — важка операція, роби перед масовим редагуванням.</p>
+            <p><b>Часткове оновлення:</b> записує лише рядки з файлу; безпечніше для точкових змін.</p>
+            <p><b>Строгий синхрон (Обрати XLSX):</b> як імпорт + видалення master-записів, яких немає у файлі.</p>
+            <p><b>Експорт без master:</b> скан позицій «Мій склад» без master-картки (до ~20 000 рядків).</p>
           </div>
         </div>
       </div>
@@ -1046,10 +1206,11 @@ function BrandFoldersManagement({ setStatus }) {
     order: 0, 
     filterType: "ukrSkladGroup",
     filterValue: "",
-    // Для нового інтерфейсу вибору
     selectedBrands: [],
     selectedCategories: [],
-    selectedGroupIds: []
+    selectedGroupIds: [],
+    badge: "",
+    badgeColor: "red",
   });
   
   // Завантажуємо бренди та категорії для вибору
@@ -1161,6 +1322,8 @@ function BrandFoldersManagement({ setStatus }) {
         slug: folder.slug?.trim() || safeDocId(folder.name),
         order: Number(folder.order) || 0,
         filterType: filterType,
+        badge: folder.badge?.trim() || "",
+        badgeColor: folder.badge?.trim() ? (folder.badgeColor || "red") : "",
         updatedAt: serverTimestamp()
       };
 
@@ -1182,7 +1345,7 @@ function BrandFoldersManagement({ setStatus }) {
       await setDoc(doc(db, `/artifacts/${appId}/public/meta/brandFolders`, id), data, { merge: true });
       await loadFolders();
       setEditing(null);
-      setNewFolder({ name: "", slug: "", order: 0, filterType: "ukrSkladGroup", filterValue: "", selectedBrands: [], selectedCategories: [], selectedGroupIds: [] });
+      setNewFolder({ name: "", slug: "", order: 0, filterType: "ukrSkladGroup", filterValue: "", selectedBrands: [], selectedCategories: [], selectedGroupIds: [], badge: "", badgeColor: "red" });
       setStatus?.({ type: "success", message: "Бренд-папку збережено" });
     } catch (e) {
       setStatus?.({ type: "error", message: e?.message || "Помилка збереження" });
@@ -1425,6 +1588,47 @@ function BrandFoldersManagement({ setStatus }) {
             />
           )}
         </div>
+        {/* Мітка-бейдж */}
+        <div className="mb-3 flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!newFolder.badge}
+              onChange={(e) => setNewFolder({ ...newFolder, badge: e.target.checked ? (newFolder.badge || "NEW") : "" })}
+            />
+            <span className="text-sm font-medium">Показувати мітку</span>
+          </label>
+          {!!newFolder.badge && (
+            <>
+              <input
+                className="p-2 border rounded text-sm w-28"
+                placeholder="NEW, SALE, АКЦІЯ…"
+                maxLength={10}
+                value={newFolder.badge}
+                onChange={(e) => setNewFolder({ ...newFolder, badge: e.target.value })}
+              />
+              <div className="flex gap-1">
+                {[
+                  { value: "red", label: "Червоний", cls: "bg-red-500" },
+                  { value: "orange", label: "Помаранчевий", cls: "bg-orange-500" },
+                  { value: "green", label: "Зелений", cls: "bg-green-500" },
+                ].map(({ value, label, cls }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    title={label}
+                    onClick={() => setNewFolder({ ...newFolder, badgeColor: value })}
+                    className={`w-6 h-6 rounded-full ${cls} ${newFolder.badgeColor === value ? 'ring-2 ring-offset-1 ring-gray-600' : 'opacity-60 hover:opacity-100'}`}
+                  />
+                ))}
+              </div>
+              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full text-white ${
+                newFolder.badgeColor === 'green' ? 'bg-green-500' :
+                newFolder.badgeColor === 'orange' ? 'bg-orange-500' : 'bg-red-500'
+              }`}>{newFolder.badge}</span>
+            </>
+          )}
+        </div>
         <button
           className={`${primary} disabled:opacity-60`}
           disabled={busy || !newFolder.name?.trim() || 
@@ -1434,7 +1638,7 @@ function BrandFoldersManagement({ setStatus }) {
           }
           onClick={() => {
             saveFolder(newFolder);
-            setNewFolder({ name: "", slug: "", order: 0, filterType: "ukrSkladGroup", filterValue: "", selectedBrands: [], selectedCategories: [], selectedGroupIds: [] });
+            setNewFolder({ name: "", slug: "", order: 0, filterType: "ukrSkladGroup", filterValue: "", selectedBrands: [], selectedCategories: [], selectedGroupIds: [], badge: "", badgeColor: "red" });
           }}
         >
           Додати
@@ -1517,6 +1721,47 @@ function BrandFoldersManagement({ setStatus }) {
                       />
                     )}
                   </div>
+                  {/* Мітка-бейдж */}
+                  <div className="flex items-center gap-3 flex-wrap py-1">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={!!editing.badge}
+                        onChange={(e) => setEditing({ ...editing, badge: e.target.checked ? (editing.badge || "NEW") : "" })}
+                      />
+                      <span className="text-sm font-medium">Показувати мітку</span>
+                    </label>
+                    {!!editing.badge && (
+                      <>
+                        <input
+                          className="p-2 border rounded text-sm w-28"
+                          placeholder="NEW, SALE, АКЦІЯ…"
+                          maxLength={10}
+                          value={editing.badge}
+                          onChange={(e) => setEditing({ ...editing, badge: e.target.value })}
+                        />
+                        <div className="flex gap-1">
+                          {[
+                            { value: "red", label: "Червоний", cls: "bg-red-500" },
+                            { value: "orange", label: "Помаранчевий", cls: "bg-orange-500" },
+                            { value: "green", label: "Зелений", cls: "bg-green-500" },
+                          ].map(({ value, label, cls }) => (
+                            <button
+                              key={value}
+                              type="button"
+                              title={label}
+                              onClick={() => setEditing({ ...editing, badgeColor: value })}
+                              className={`w-6 h-6 rounded-full ${cls} ${editing.badgeColor === value ? 'ring-2 ring-offset-1 ring-gray-600' : 'opacity-60 hover:opacity-100'}`}
+                            />
+                          ))}
+                        </div>
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full text-white ${
+                          editing.badgeColor === 'green' ? 'bg-green-500' :
+                          editing.badgeColor === 'orange' ? 'bg-orange-500' : 'bg-red-500'
+                        }`}>{editing.badge}</span>
+                      </>
+                    )}
+                  </div>
                   <div className="flex gap-2">
                     <button className={primary} onClick={() => saveFolder(editing)} disabled={busy}>
                       Зберегти
@@ -1527,10 +1772,16 @@ function BrandFoldersManagement({ setStatus }) {
               ) : (
                 <>
                   <div className="flex items-center justify-between">
-                    <div>
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium">{folder.name || folder.id}</span>
-                      {folder.slug && <span className="text-sm text-slate-500 ml-2">Slug: {folder.slug}</span>}
-                      <span className="text-sm text-slate-500 ml-2">Порядок: {folder.order || 0}</span>
+                      {folder.badge && (
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full text-white ${
+                          folder.badgeColor === 'green' ? 'bg-green-500' :
+                          folder.badgeColor === 'orange' ? 'bg-orange-500' : 'bg-red-500'
+                        }`}>{folder.badge}</span>
+                      )}
+                      {folder.slug && <span className="text-sm text-slate-500">Slug: {folder.slug}</span>}
+                      <span className="text-sm text-slate-500">Порядок: {folder.order || 0}</span>
                     </div>
                     <div className="flex gap-2">
                       <button className={secondary} onClick={() => {
@@ -1543,10 +1794,11 @@ function BrandFoldersManagement({ setStatus }) {
                           order: folder.order || 0,
                           filterType: filterType,
                           filterValue: folderFilterValue,
-                          // Ініціалізуємо вибрані значення для нового інтерфейсу
                           selectedGroupIds: filterType === 'ukrSkladGroup' ? selectedValues : [],
                           selectedBrands: filterType === 'brand' ? selectedValues : [],
-                          selectedCategories: filterType === 'category' ? selectedValues : []
+                          selectedCategories: filterType === 'category' ? selectedValues : [],
+                          badge: folder.badge || "",
+                          badgeColor: folder.badgeColor || "red",
                         });
                       }}>
                         Редагувати
