@@ -29,6 +29,14 @@
       {
         "source": "/admin/**",
         "destination": "/admin.html"
+      },
+      {
+        "source": "/buh",
+        "destination": "/buh.html"
+      },
+      {
+        "source": "/buh/**",
+        "destination": "/buh.html"
       }
     ]
   },

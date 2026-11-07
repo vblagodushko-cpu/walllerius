@@ -10,6 +10,7 @@ export default defineConfig({
         admin:  resolve(__dirname, 'admin.html'),
         login:  resolve(__dirname, 'login.html'),
         portal: resolve(__dirname, 'portal.html'),
+      buh: resolve(__dirname, 'buh.html'),
       }
     }
   }

@@ -3,7 +3,7 @@ import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { auth, functions } from "../../firebase-config";
 
-export default function AdminLogin() {
+export default function AdminLogin({ title = "Вхід до адмін-панелі" }) {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,7 +45,7 @@ export default function AdminLogin() {
   return (
     <div className="min-h-[60vh] grid place-items-center">
       <form onSubmit={submit} className="bg-white p-6 rounded-2xl shadow w-full max-w-md space-y-4">
-        <div className="text-xl font-semibold text-center">Вхід до адмін-панелі</div>
+        <div className="text-xl font-semibold text-center">{title}</div>
         <div>
           <label className="block text-sm text-slate-600">Email</label>
           <input
