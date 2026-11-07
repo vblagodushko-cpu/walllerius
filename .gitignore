@@ -101,6 +101,10 @@ checkAdmin.*
 setAdminClaim.*
 generateEmailVerificationLink.*
 
+# Випадкові дублікати / paste у корені (справжній entry: functions/index.js)
+/index.js
+/deleteBatch*
+
 # Temporary code fragments (prevent accidental commits)
 ({
 (x
