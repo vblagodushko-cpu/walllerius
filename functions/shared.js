@@ -279,7 +279,8 @@ const isAdminReq = (req) => {
 };
 
 
-async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, categories, pack, tolerances, synonyms, ukrSkladId, ukrSkladGroupId, minStock, lastSupplier, prices }) {
+// createIfMissing === false: не створювати новий товар (повертає null); наявний оновлюється як завжди.
+async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, categories, pack, tolerances, synonyms, ukrSkladId, ukrSkladGroupId, minStock, lastSupplier, prices, createIfMissing }) {
   supplier = normalizeSupplier(supplier);
   brand = await normalizeBrand(brand);
   const article = normalizeArticle(id);
@@ -301,6 +302,7 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, c
     const productSnap = await tx.get(productRef);
     
     const exists = productSnap.exists;
+    if (!exists && createIfMissing === false) return null;
     logger.info("upsertProduct: transaction", { docId, supplier, brand, article, exists });
     
     let productData = exists ? productSnap.data() : {};
