@@ -3,7 +3,8 @@ import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { auth, functions } from "../../firebase-config";
 
-export default function AdminLogin({ title = "Вхід до адмін-панелі" }) {
+// requireAdmin=false: для сторінки бухгалтера (/buh) — права перевіряє сама сторінка за claim.
+export default function AdminLogin({ title = "Вхід до адмін-панелі", requireAdmin = true }) {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [busy, setBusy] = useState(false);
@@ -16,6 +17,11 @@ export default function AdminLogin({ title = "Вхід до адмін-пане�
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, pass);
       const user = userCredential.user;
+
+      if (!requireAdmin) {
+        await user.getIdToken(true);
+        return;
+      }
       
       // Встановлюємо адмін-клейм та оновлюємо токен
       try {

@@ -2022,3 +2022,4 @@ try { Object.assign(exports, require("./aiEnrichment")); } catch (e) { logger.wa
 try { Object.assign(exports, require("./masterDataExcel")); } catch (e) { logger.warn("masterDataExcel module not found", String(e)); }
 try { Object.assign(exports, require("./ukrIngest")); } catch (e) { logger.warn("ukrIngest module not found", String(e)); }
 try { Object.assign(exports, require("./accounting")); } catch (e) { logger.warn("accounting module not found", String(e)); }
+try { Object.assign(exports, require("./accountants")); } catch (e) { logger.warn("accountants module not found", String(e)); }

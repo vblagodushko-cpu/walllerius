@@ -480,7 +480,7 @@ export default function BuhApp() {
   if (user === undefined) {
     return <div className="min-h-screen grid place-items-center text-gray-500">Завантаження…</div>;
   }
-  if (!user) return <AdminLogin title="Вхід до бухгалтерії" />;
+  if (!user) return <AdminLogin title="Вхід до бухгалтерії" requireAdmin={false} />;
   if (allowed === null) {
     return <div className="min-h-screen grid place-items-center text-gray-500">Перевірка доступу…</div>;
   }

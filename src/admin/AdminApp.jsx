@@ -13,6 +13,7 @@ import DataPage from "./pages/DataPage.jsx";
 import ExportPage from "./pages/ExportPage.jsx";
 import PurchasesPage from "./pages/PurchasesPage.jsx";
 import OrdersExportPage from "./pages/OrdersExportPage.jsx";
+import SecurityPage from "./pages/SecurityPage.jsx";
 import AdminLogin from "./components/AdminLogin.jsx";
 import { logger } from "../utils/logger.js";
 
@@ -34,6 +35,7 @@ const NAV = [
   { key: "clients",   label: "Клієнти",        page: null }, // Обробляється окремо
   { key: "data",      label: "Дані",           page: <DataPage /> },
   { key: "ordersExport", label: "Вигрузка замовлень", page: null }, // Обробляється окремо
+  { key: "security",  label: "Безпека",        page: null }, // Обробляється окремо
 ];
 
 export default function AdminApp() {
@@ -211,6 +213,8 @@ export default function AdminApp() {
         ? <OrdersExportPage setStatus={setStatus} />
         : current.key === "suppliers"
         ? <SuppliersPage setStatus={setStatus} />
+        : current.key === "security"
+        ? <SecurityPage setStatus={setStatus} />
         : current.key === "export"
         ? <ExportPage setStatus={setStatus} />
         : current.key === "clients"
