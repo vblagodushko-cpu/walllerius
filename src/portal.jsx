@@ -319,7 +319,6 @@ function PortalApp() {
   const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('selectedCurrency') || 'EUR');
   const [uahRate, setUahRate] = useState(null);
   const [hasBalances, setHasBalances] = useState(false);
-  const [settlements, setSettlements] = useState(null);
   const [view, setView] = useState('products');
   const [clientPricingRules, setClientPricingRules] = useState(null);
 
@@ -1157,31 +1156,6 @@ function PortalApp() {
     }
   };
 
-  // settlements lazy load
-  useEffect(() => {
-    (async () => {
-      if (view !== 'settlements' || settlements !== null || !user) return;
-      // Використовуємо user.uid напряму, оскільки clientCode має співпадати з uid
-      // (у settlements.js файли парсяться з імені, але зберігаються під clientCode = uid)
-      const clientCode = String(user.uid);
-      
-      const uahQ = query(
-        collection(db, `/artifacts/${appId}/public/data/settlements/${clientCode}/ledger-UAH`),
-        orderBy('date', 'desc')
-      );
-      const eurQ = query(
-        collection(db, `/artifacts/${appId}/public/data/settlements/${clientCode}/ledger-EUR`),
-        orderBy('date', 'desc')
-      );
-      
-      const [uahSnap, eurSnap] = await Promise.all([getDocs(uahQ), getDocs(eurQ)]);
-      const uah = uahSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const eur = eurSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      
-      setSettlements([...uah, ...eur]);
-    })();
-  }, [view, settlements, user]);
-
   const logout = async () => { await signOut(auth); localStorage.removeItem('shoppingCart'); window.location.href = '/login.html'; };
 
   // Функція пошуку по артикулу
@@ -1722,7 +1696,7 @@ function PortalApp() {
         )}
 
         {view === 'settlements' && (
-          <SettlementsPage items={settlements || []} balances={balances} client={safeClient} user={user} />
+          <SettlementsPage balances={balances} client={safeClient} user={user} />
         )}
 
         {view === 'profile' && (

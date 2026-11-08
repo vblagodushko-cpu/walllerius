@@ -1265,6 +1265,9 @@ exports.indexDocsFromDrive = onSchedule(
   { schedule: "0 9-18 * * 1-5", timeZone: "Europe/Kyiv", region: REGION },
   async () => {
     if (!DOCS_FOLDER_ID) return null;
+    // docsIndex ніким не читається; після переходу на агента (рядки накладних у invoiceLines) індексацію Drive пропускаємо
+    const syncSnap = await db.doc(`/artifacts/${APP_ID}/public/meta/syncState/syncState`).get();
+    if (syncSnap.exists && syncSnap.data().settlementsSource === "agent") return null;
     const drive = await mkDrive();
     const res = await drive.files.list({
       q: `'${DOCS_FOLDER_ID}' in parents and mimeType='text/csv' and trashed=false`,
@@ -1342,29 +1345,21 @@ exports.getDocDetails = onCall({ region: REGION, cors: true }, async (request) =
   const clientSnap = await db.doc(`/artifacts/${APP_ID}/public/data/clients/${code}`).get();
   if (!clientSnap.exists) throw new HttpsError("permission-denied", "Немає доступу до документа.");
 
-  // 3) Шукаємо файл безпосередньо в Google Drive (без індексації)
-  // Доступ дозволено до всіх документів з clientCode користувача
-  const drive = await mkDrive();
-  const fileName = `${t}_${num}_${code}_${cur}.csv`;
-
-  const filesResp = await drive.files.list({
-    q: `name='${fileName}' and '${DOCS_FOLDER_ID}' in parents and mimeType='text/csv' and trashed=false`,
-    fields: "files(id,name)",
-    pageSize: 1,
-  });
-
-  if (!filesResp.data.files || filesResp.data.files.length === 0) {
-    throw new HttpsError("not-found", `Документ не знайдено: ${fileName}`);
+  // 3) Накладна має бути в журналі взаєморозрахунків саме цього клієнта (видаткова, збігається номер).
+  //    Єдина відповідь "не знайдено" - не розкриваємо, чи документ існує в іншого клієнта.
+  const ledgerSnap = await db
+    .collection(`/artifacts/${APP_ID}/public/data/settlements/${code}/ledger-${cur}`)
+    .where("docNumber", "==", num)
+    .limit(5)
+    .get();
+  const ledgerDocs = ledgerSnap.docs
+    .map((d) => d.data())
+    .filter((d) => d.docCode === "VNAKL" || String(d.docType || "").toLowerCase().includes("видаткова"));
+  if (ledgerDocs.length === 0) {
+    throw new HttpsError("not-found", "Документ не знайдено.");
   }
-  
-  const fileId = filesResp.data.files[0].id;
 
-  // 5) Завантажуємо CSV з Drive, парсимо
-  const fileResp = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
-  const rows = parseCsvBuffer(Buffer.from(fileResp.data));
-
-  // 6) Мапінг під твій формат (code|name|cnt|price|discount|total)
-  const items = rows.map(r => ({
+  const fmtItems = (rows) => rows.map((r) => ({
     code:  String(r.code || r.Код || r.Артикул || r.sku || "").trim(),
     name:  String(r.name || r.Найменування || r.Опис || "").trim(),
     qty:   Number(r.cnt || r.qty || r.Кількість || r.amount || r.кількість || 0),
@@ -1375,11 +1370,52 @@ exports.getDocDetails = onCall({ region: REGION, cors: true }, async (request) =
     note:  String(r.note || r.Примітка || "").trim(),
   }));
 
-  // 7) Аудит успішного видачі
+  // 4) Основне джерело - рядки, які веде локальний агент (invoiceLines у приватній колекції)
+  let items = null;
+  let source = "firestore";
+  for (const l of ledgerDocs) {
+    const docId = String(l.docId || "").trim();
+    if (!/^\d{1,20}$/.test(docId)) continue;
+    const snap = await db.doc(`/artifacts/${APP_ID}/private/data/invoiceLines/${docId}`).get();
+    if (!snap.exists) continue;
+    const d = snap.data();
+    if (String(d.clientId) !== code || String(d.currency) !== cur) continue; // чужий або інша валюта
+    items = (Array.isArray(d.lines) ? d.lines : []).map((r) => ({
+      code: String(r.code || ""),
+      name: String(r.name || ""),
+      qty: Number(r.qty || 0),
+      price: Number(r.price || 0),
+      discount: Number(r.discount || 0),
+      sum: Number(r.sum || 0),
+      unit: String(r.unit || ""),
+      note: "",
+    }));
+    break;
+  }
+
+  // 5) Запасний канал (поки агент не заповнив рядки): CSV з Google Drive
+  if (items === null) {
+    source = "drive";
+    if (!DOCS_FOLDER_ID) throw new HttpsError("not-found", "Документ не знайдено.");
+    const drive = await mkDrive();
+    const fileName = `${t}_${num}_${code}_${cur}.csv`;
+    const filesResp = await drive.files.list({
+      q: `name='${fileName}' and '${DOCS_FOLDER_ID}' in parents and mimeType='text/csv' and trashed=false`,
+      fields: "files(id,name)",
+      pageSize: 1,
+    });
+    if (!filesResp.data.files || filesResp.data.files.length === 0) {
+      throw new HttpsError("not-found", "Документ не знайдено.");
+    }
+    const fileResp = await drive.files.get({ fileId: filesResp.data.files[0].id, alt: "media" }, { responseType: "arraybuffer" });
+    items = fmtItems(parseCsvBuffer(Buffer.from(fileResp.data)));
+  }
+
+  // 6) Аудит успішної видачі
   await db.collection(`/artifacts/${APP_ID}/private/security/auditLogs`).add({
     at: FieldValue.serverTimestamp(),
     uid, clientCode: code, docNumber: num, currency: cur, type: t,
-    status: "ok", fileName: fileName
+    status: "ok", source
   });
 
   return { items, cached: false };

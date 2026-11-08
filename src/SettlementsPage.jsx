@@ -1,28 +1,53 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { httpsCallable } from "firebase/functions";
-import { functions } from "./firebase-config";
+import { collection, getDocs, limit, orderBy, query, startAfter, Timestamp, where } from "firebase/firestore";
+import { db, functions } from "./firebase-config";
 
-// Settlements page with "drill-down" into delivery note (type=1) via callable getDocDetails
-const SettlementsPage = ({ items, balances, client, user }) => {
-  // Кеш для завантажених з Drive даних (на сесію)
-  const [driveCache, setDriveCache] = useState(new Map());
-  
-  // Filters
-  const [currencyFilter, setCurrencyFilter] = useState("EUR"); // По замовчуванню EUR
+// Взаєморозрахунки: журнал операцій з Firestore (його веде локальний агент з UkrSklad, без Google Drive).
+// Читаємо порціями (limit + startAfter) за обраний період, без onSnapshot.
+// Сальдо після кожної операції береться з поля balanceAfter. Видаткова накладна відкривається через getDocDetails.
+const APP_ID = import.meta.env.VITE_PROJECT_ID;
+const PAGE_SIZE = 100;
+const EXPORT_PAGE_SIZE = 500;
+
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const tsMs = (v) => (v?.seconds ? v.seconds * 1000 : v ? Date.parse(v) : 0) || 0;
+const num = (v) => Number(v || 0);
+
+const fmtDate = (v) => {
+  const ms = tsMs(v);
+  if (!ms) return "";
+  // Дата зберігається як 12:00 UTC, тому показуємо її в UTC - без зсуву на сусідній день
+  return new Date(ms).toLocaleDateString("uk-UA", { timeZone: "UTC" });
+};
+
+const isDelivery = (row) =>
+  !!row?.docNumber &&
+  (row?.docCode === "VNAKL" ||
+    row?.docType === 1 ||
+    row?.docType === "1" ||
+    (typeof row?.docType === "string" && row.docType.toLowerCase().includes("видаткова")));
+
+// Нові зверху: за датою, всередині дня за seq (порядок проведення в обліку)
+const sortDesc = (a, b) => tsMs(b.date) - tsMs(a.date) || num(b.seq) - num(a.seq);
+
+const SettlementsPage = ({ balances, client, user }) => {
+  const clientCode = String(user?.uid || "");
+
+  const [currencyFilter, setCurrencyFilter] = useState("EUR");
   const [dateRange, setDateRange] = useState(() => {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 15); // Останні 15 днів
-    return {
-      start: startDate.toISOString().slice(0, 10),
-      end: endDate.toISOString().slice(0, 10),
-    };
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 30);
+    return { start: isoDay(start), end: isoDay(end) };
   });
-  
-  // Стан для завантаження з Drive
-  const [loadingFromDrive, setLoadingFromDrive] = useState(false);
-  const [driveItems, setDriveItems] = useState([]);
-  const [driveStartingBalance, setDriveStartingBalance] = useState(0);
+
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const lastDocRef = useRef(null);
+  const requestId = useRef(0);
 
   // Modal state for document lines
   const [docLines, setDocLines] = useState([]);
@@ -30,315 +55,212 @@ const SettlementsPage = ({ items, balances, client, user }) => {
   const [docModalOpen, setDocModalOpen] = useState(false);
   const [loadingDoc, setLoadingDoc] = useState(false);
 
+  const buildQuery = useCallback(
+    (range, currency, pageSize, after) => {
+      const from = Timestamp.fromDate(new Date(`${range.start}T00:00:00Z`));
+      const to = Timestamp.fromDate(new Date(`${range.end}T23:59:59Z`));
+      const parts = [
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+        limit(pageSize),
+      ];
+      if (after) parts.push(startAfter(after));
+      return query(
+        collection(db, `/artifacts/${APP_ID}/public/data/settlements/${clientCode}/ledger-${currency}`),
+        ...parts
+      );
+    },
+    [clientCode]
+  );
+
+  // Перша порція (або нова після зміни фільтрів)
+  const loadFirst = useCallback(
+    async (range = dateRange, currency = currencyFilter) => {
+      if (!clientCode) return;
+      const myId = ++requestId.current;
+      setLoading(true);
+      setLoadError("");
+      try {
+        const snap = await getDocs(buildQuery(range, currency, PAGE_SIZE, null));
+        if (myId !== requestId.current) return;
+        lastDocRef.current = snap.docs[snap.docs.length - 1] || null;
+        setRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(sortDesc));
+        setHasMore(snap.docs.length === PAGE_SIZE);
+      } catch (e) {
+        if (myId !== requestId.current) return;
+        console.error(e);
+        setRows([]);
+        setHasMore(false);
+        setLoadError("Не вдалося завантажити дані. Спробуйте ще раз.");
+      } finally {
+        if (myId === requestId.current) setLoading(false);
+      }
+    },
+    [buildQuery, clientCode, currencyFilter, dateRange]
+  );
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loading || !lastDocRef.current) return;
+    const myId = requestId.current;
+    setLoading(true);
+    try {
+      const snap = await getDocs(buildQuery(dateRange, currencyFilter, PAGE_SIZE, lastDocRef.current));
+      if (myId !== requestId.current) return;
+      lastDocRef.current = snap.docs[snap.docs.length - 1] || lastDocRef.current;
+      const next = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setRows((prev) => [...prev, ...next].sort(sortDesc));
+      setHasMore(snap.docs.length === PAGE_SIZE);
+    } catch (e) {
+      console.error(e);
+      setLoadError("Не вдалося завантажити наступну порцію.");
+    } finally {
+      if (myId === requestId.current) setLoading(false);
+    }
+  }, [buildQuery, currencyFilter, dateRange, hasMore, loading]);
+
+  // Автозавантаження при вході та при зміні валюти; період застосовується кнопкою "Показати"
+  useEffect(() => {
+    loadFirst(dateRange, currencyFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currencyFilter, clientCode]);
+
   // Drill-down handler
-  const openDoc = useCallback(async (row) => {
-    try {
-      const isDelivery =
-        row?.docNumber &&
-        (row?.docType === 1 ||
-          row?.docType === "1" ||
-          (typeof row?.docType === "string" && row.docType.toLowerCase().includes("видаткова")));
-      if (!isDelivery) return; // only delivery notes
+  const openDoc = useCallback(
+    async (row) => {
+      try {
+        if (!isDelivery(row)) return;
+        setLoadingDoc(true);
+        setDocMeta({ number: row.docNumber, currency: row.currency || currencyFilter, date: row.date });
 
-      setLoadingDoc(true);
-      setDocMeta({ number: row.docNumber, currency: row.currency || "UAH", date: row.date });
-
-      // clientCode не потрібен - backend бере його з /private/data/clientsAuth/{uid}
-      const payload = {
-        type: 1,                          // explicitly use type 1
-        docNumber: row.docNumber,         // e.g. "П10-16909"
-        currency: row.currency || (currencyFilter || "UAH"),
-      };
-
-      const resp = await httpsCallable(functions, "getDocDetails")(payload);
-      setDocLines((resp?.data && resp.data.items) ? resp.data.items : []);
-      setDocModalOpen(true);
-    } catch (e) {
-      console.error(e);
-      // Перевіряємо чи це помилка "not-found" (документ не знайдено)
-      const errorCode = e?.code || e?.details?.code || "";
-      const errorMessage = e?.message || "";
-      if (errorCode === "not-found" || errorCode.includes("not-found") || 
-          errorMessage.includes("не знайдено") || errorMessage.includes("not-found")) {
-        alert("Документ не знайдено. Можливо документ застарілий, зверніться до менеджера для отримання документу.");
-      } else {
-        alert(errorMessage || "Не вдалося завантажити документ");
+        // clientCode не потрібен - backend бере його з /private/data/clientsAuth/{uid}
+        const resp = await httpsCallable(functions, "getDocDetails")({
+          type: 1,
+          docNumber: row.docNumber,
+          currency: row.currency || currencyFilter,
+        });
+        setDocLines(resp?.data?.items ? resp.data.items : []);
+        setDocModalOpen(true);
+      } catch (e) {
+        console.error(e);
+        const errorCode = e?.code || e?.details?.code || "";
+        const errorMessage = e?.message || "";
+        if (
+          errorCode === "not-found" ||
+          String(errorCode).includes("not-found") ||
+          errorMessage.includes("не знайдено") ||
+          errorMessage.includes("not-found")
+        ) {
+          alert("Документ не знайдено. Можливо документ застарілий, зверніться до менеджера для отримання документу.");
+        } else {
+          alert(errorMessage || "Не вдалося завантажити документ");
+        }
+      } finally {
+        setLoadingDoc(false);
       }
-    } finally {
-      setLoadingDoc(false);
-    }
-  }, [client, currencyFilter]);
+    },
+    [currencyFilter]
+  );
 
-  // Об'єднуємо збережені дані та дані з Drive
-  const allItems = useMemo(() => {
-    if (driveItems.length > 0) {
-      return driveItems;
-    }
-    return items || [];
-  }, [items, driveItems]);
-  
-  // Фільтрація для об'єднаних даних
-  const filteredItems = useMemo(() => {
-    if (!Array.isArray(allItems)) return [];
-    const start = new Date(dateRange.start); start.setHours(0, 0, 0, 0);
-    const end = new Date(dateRange.end); end.setHours(23, 59, 59, 999);
-    return allItems.filter(item => {
-      // Підтримка різних форматів дати
-      let itemDate;
-      if (item?.date?.seconds) {
-        itemDate = new Date(item.date.seconds * 1000);
-      } else if (item?.date) {
-        itemDate = new Date(item.date);
-      } else {
-        return false;
-      }
-      const isCurrencyMatch = (item.currency || "UAH") === currencyFilter;
-      const isDateMatch = itemDate >= start && itemDate <= end;
-      return isCurrencyMatch && isDateMatch;
-    });
-  }, [allItems, currencyFilter, dateRange]);
+  const hasSaldo = useMemo(() => rows.some((r) => r.balanceAfter !== undefined && r.balanceAfter !== null), [rows]);
+  const currentBalance = Number(balances?.[currencyFilter] || 0);
 
-  // Running balance тільки для даних з Drive
-  const itemsWithBalance = useMemo(() => {
-    // Для локальних даних (15 днів) не рахуємо running balance
-    if (driveItems.length === 0) {
-      // Просто сортуємо від нових до старих для відображення
-      return [...filteredItems].sort((a, b) => {
-        const dateA = a?.date?.seconds ? a.date.seconds * 1000 : Date.parse(a.date || 0);
-        const dateB = b?.date?.seconds ? b.date.seconds * 1000 : Date.parse(b.date || 0);
-        return dateB - dateA; // від нових до старих
-      });
-    }
-    
-    // Для даних з Drive рахуємо running balance
-    // Спочатку сортуємо від старих до нових для правильного running balance
-    const list = [...filteredItems].sort((a, b) => {
-      const dateA = a?.date ? new Date(a.date).getTime() : 0;
-      const dateB = b?.date ? new Date(b.date).getTime() : 0;
-      return dateA - dateB; // від старих до нових для правильного running balance
-    });
-    
-    // Обчислюємо running balance від старих до нових, починаючи з driveStartingBalance
-    let bal = driveStartingBalance || 0;
-    const withBalance = list.map(it => {
-      bal += Number(it.delta || 0);
-      return { ...it, runningBalance: bal };
-    });
-    
-    // Перевертаємо список, щоб найсвіжіші були зверху
-    return withBalance.reverse();
-  }, [filteredItems, driveItems.length, driveStartingBalance]);
-
-  const fmtDate = (v) => {
-    if (!v) return "";
-    let ts;
-    if (v?.seconds) {
-      ts = v.seconds * 1000;
-    } else if (typeof v === "string") {
-      ts = Date.parse(v);
-    } else {
-      ts = new Date(v).getTime();
-    }
-    if (!ts || isNaN(ts)) return "";
-    return new Date(ts).toLocaleDateString("uk-UA");
-  };
-
-  // Завантаження повної історії з Google Drive
-  const handleLoadFromDrive = useCallback(async () => {
-    const cacheKey = `${currencyFilter}_${dateRange.start}_${dateRange.end}`;
-    
-    // Перевірка кешу
-    if (driveCache.has(cacheKey)) {
-      const cached = driveCache.get(cacheKey);
-      setDriveItems(cached.items || cached);
-      setDriveStartingBalance(cached.startingBalance || 0);
-      return;
-    }
-    
-    setLoadingFromDrive(true);
-    try {
-      const call = httpsCallable(functions, "getSettlementsFromDrive");
-      const resp = await call({
-        currency: currencyFilter,
-        startDate: dateRange.start,
-        endDate: dateRange.end,
-      });
-      
-      const loadedItems = resp?.data?.items || [];
-      const startingBalance = resp?.data?.startingBalance || 0;
-      
-      setDriveItems(loadedItems);
-      setDriveStartingBalance(startingBalance);
-      
-      // Зберігаємо в кеш
-      const newCache = new Map(driveCache);
-      newCache.set(cacheKey, { items: loadedItems, startingBalance });
-      setDriveCache(newCache);
-    } catch (e) {
-      console.error(e);
-      alert(e?.message || "Не вдалося завантажити дані з Google Drive");
-    } finally {
-      setLoadingFromDrive(false);
-    }
-  }, [currencyFilter, dateRange, driveCache]);
-
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       if (typeof window.XLSX === "undefined") {
         alert("Бібліотека XLSX не підключена.");
         return;
       }
-      
-      // Отримуємо clientCode з user.uid
-      const clientCode = user?.uid || "0";
-      
-      // Формуємо дані для експорту
-      const dataToExport = [];
-      
-      // Додаємо початковий баланс (тільки якщо є дані з Drive)
-      if (driveItems.length > 0 && driveStartingBalance !== undefined) {
-        const startingBalanceRow = {};
-        startingBalanceRow["Дата"] = "Початковий баланс";
-        startingBalanceRow["Тип"] = Number(driveStartingBalance).toFixed(2); // Значення в колонці B
-        startingBalanceRow["Номер"] = "";
-        startingBalanceRow["Прихід (+)"] = "";
-        startingBalanceRow["Витрата (-)"] = "";
-        if (driveItems.length > 0) {
-          startingBalanceRow["Сальдо"] = "";
+      // Для експорту дочитуємо весь період (порціями), якщо на екрані лише частина
+      let all = rows;
+      if (hasMore) {
+        setLoading(true);
+        all = [];
+        let after = null;
+        for (;;) {
+          const snap = await getDocs(buildQuery(dateRange, currencyFilter, EXPORT_PAGE_SIZE, after));
+          all.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          after = snap.docs[snap.docs.length - 1] || null;
+          if (snap.docs.length < EXPORT_PAGE_SIZE || !after) break;
         }
-        startingBalanceRow["Валюта"] = "";
-        dataToExport.push(startingBalanceRow);
-        
-        // Два порожні рядки після початкового балансу
-        dataToExport.push({});
-        dataToExport.push({});
+        all.sort(sortDesc);
+        setLoading(false);
       }
-      
-      // Заголовки таблиці
-      const headersRow = {};
-      headersRow["Дата"] = "Дата";
-      headersRow["Тип"] = "Тип";
-      headersRow["Номер"] = "Номер";
-      headersRow["Прихід (+)"] = "Прихід (+)";
-      headersRow["Витрата (-)"] = "Витрата (-)";
-      if (driveItems.length > 0) {
-        headersRow["Сальдо"] = "Сальдо";
+
+      const withSaldo = all.some((r) => r.balanceAfter !== undefined && r.balanceAfter !== null);
+      const data = [];
+
+      if (withSaldo && all.length > 0) {
+        const oldest = all[all.length - 1];
+        const startBal = num(oldest.balanceAfter) - num(oldest.delta);
+        data.push({ "Дата": "Початковий баланс", "Тип": startBal.toFixed(2) });
+        data.push({}, {});
       }
-      headersRow["Валюта"] = "Валюта";
-      dataToExport.push(headersRow);
-      
-      // Додаємо операції
-      const operationsData = itemsWithBalance.map(item => ({
-        "Дата": fmtDate(item.date),
-        "Тип": item.docType,
-        "Номер": item.docNumber,
-        "Прихід (+)": item.income > 0 ? Number(item.income).toFixed(2) : "",
-        "Витрата (-)": item.expense > 0 ? Number(item.expense).toFixed(2) : "",
-        ...(driveItems.length > 0 ? { "Сальдо": Number(item.runningBalance || 0).toFixed(2) } : {}),
-        "Валюта": item.currency || currencyFilter,
-      }));
-      dataToExport.push(...operationsData);
-      
-      // Два порожні рядки після операцій
-      dataToExport.push({});
-      dataToExport.push({});
-      
-      // Додаємо баланс на кінець
-      let finalBalance = 0;
-      if (driveItems.length > 0 && itemsWithBalance.length > 0) {
-        // Останній runningBalance з таблиці (якщо є дані з Drive)
-        const lastItem = itemsWithBalance[itemsWithBalance.length - 1];
-        finalBalance = Number(lastItem.runningBalance || 0);
-      } else {
-        // Поточний баланс з balances (якщо немає даних з Drive)
-        finalBalance = Number(balances?.[currencyFilter] || 0);
+
+      const header = { "Дата": "Дата", "Тип": "Тип", "Номер": "Номер", "Прихід (+)": "Прихід (+)", "Витрата (-)": "Витрата (-)" };
+      if (withSaldo) header["Сальдо"] = "Сальдо";
+      header["Валюта"] = "Валюта";
+      data.push(header);
+
+      for (const item of all) {
+        data.push({
+          "Дата": fmtDate(item.date),
+          "Тип": item.docType,
+          "Номер": item.docNumber,
+          "Прихід (+)": item.income > 0 ? num(item.income).toFixed(2) : "",
+          "Витрата (-)": item.expense > 0 ? num(item.expense).toFixed(2) : "",
+          ...(withSaldo ? { "Сальдо": num(item.balanceAfter).toFixed(2) } : {}),
+          "Валюта": item.currency || currencyFilter,
+        });
       }
-      
-      const finalBalanceRow = {};
-      finalBalanceRow["Дата"] = "Баланс на кінець";
-      finalBalanceRow["Тип"] = finalBalance.toFixed(2); // Значення в колонці B
-      finalBalanceRow["Номер"] = "";
-      finalBalanceRow["Прихід (+)"] = "";
-      finalBalanceRow["Витрата (-)"] = "";
-      if (driveItems.length > 0) {
-        finalBalanceRow["Сальдо"] = "";
-      }
-      finalBalanceRow["Валюта"] = "";
-      dataToExport.push(finalBalanceRow);
-      
-      // Створюємо Excel файл
-      const ws = window.XLSX.utils.json_to_sheet(dataToExport, { skipHeader: true });
-      
-      // Налаштування ширини колонок
-      const colWidths = [
-        { wch: 12 }, // Дата
-        { wch: 30 }, // Тип
-        { wch: 15 }, // Номер
-        { wch: 12 }, // Прихід (+)
-        { wch: 12 }, // Витрата (-)
-      ];
-      if (driveItems.length > 0) {
-        colWidths.push({ wch: 12 }); // Сальдо
-      }
-      colWidths.push({ wch: 8 }); // Валюта
-      ws['!cols'] = colWidths;
-      
+      data.push({}, {});
+
+      const finalBalance = withSaldo && all.length > 0 ? num(all[0].balanceAfter) : currentBalance;
+      data.push({ "Дата": "Баланс на кінець", "Тип": finalBalance.toFixed(2) });
+
+      const ws = window.XLSX.utils.json_to_sheet(data, { skipHeader: true });
+      const cols = [{ wch: 12 }, { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 12 }];
+      if (withSaldo) cols.push({ wch: 12 });
+      cols.push({ wch: 8 });
+      ws["!cols"] = cols;
+
       const wb = window.XLSX.utils.book_new();
       window.XLSX.utils.book_append_sheet(wb, ws, "Взаєморозрахунки");
-      
-      // Назва файлу: zvirka_{clientCode}_{currency}.xlsx
-      const fileName = `zvirka_${clientCode}_${currencyFilter}.xlsx`;
-      window.XLSX.writeFile(wb, fileName);
+      window.XLSX.writeFile(wb, `zvirka_${clientCode || "0"}_${currencyFilter}.xlsx`);
     } catch (e) {
       console.error(e);
+      setLoading(false);
       alert("Експорт не вдався");
     }
   };
 
-  // Дані для відображення
-  const displayItems = itemsWithBalance;
+  const currencies = useMemo(() => {
+    const list = ["EUR", "UAH"];
+    if (balances && Object.prototype.hasOwnProperty.call(balances, "USD")) list.push("USD");
+    return list;
+  }, [balances]);
 
   return (
     <div className="bg-white p-6 rounded-lg shadow-md">
       <div className="mb-4">
         <h2 className="text-xl font-semibold mb-4">Звірка</h2>
-        
-        {/* Фільтри */}
+
         <div className="flex flex-wrap items-end gap-4 mb-4">
-          {/* Toggle кнопки для валюти (пігулка-касула) */}
           <div>
             <label className="block text-sm mb-1">Валюта</label>
             <div className="flex border rounded-lg overflow-hidden">
-              <button
-                type="button"
-                onClick={() => {
-                  setCurrencyFilter("EUR");
-                  setDriveItems([]);
-                  setDriveStartingBalance(0);
-                }}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
-                  currencyFilter === "EUR"
-                    ? "bg-indigo-600 text-white"
-                    : "bg-white text-gray-700 hover:bg-gray-50"
-                }`}
-              >
-                EUR
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCurrencyFilter("UAH");
-                  setDriveItems([]);
-                  setDriveStartingBalance(0);
-                }}
-                className={`px-4 py-2 text-sm font-medium transition-colors border-l ${
-                  currencyFilter === "UAH"
-                    ? "bg-indigo-600 text-white"
-                    : "bg-white text-gray-700 hover:bg-gray-50"
-                }`}
-              >
-                UAH
-              </button>
+              {currencies.map((cur, i) => (
+                <button
+                  key={cur}
+                  type="button"
+                  onClick={() => setCurrencyFilter(cur)}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${i > 0 ? "border-l" : ""} ${
+                    currencyFilter === cur ? "bg-indigo-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {cur}
+                </button>
+              ))}
             </div>
           </div>
           <div>
@@ -347,11 +269,7 @@ const SettlementsPage = ({ items, balances, client, user }) => {
               type="date"
               className="border rounded px-3 py-2"
               value={dateRange.start}
-              onChange={(e) => {
-                setDateRange(r => ({ ...r, start: e.target.value }));
-                setDriveItems([]);
-                setDriveStartingBalance(0);
-              }}
+              onChange={(e) => setDateRange((r) => ({ ...r, start: e.target.value }))}
             />
           </div>
           <div>
@@ -360,30 +278,34 @@ const SettlementsPage = ({ items, balances, client, user }) => {
               type="date"
               className="border rounded px-3 py-2"
               value={dateRange.end}
-              onChange={(e) => {
-                setDateRange(r => ({ ...r, end: e.target.value }));
-                setDriveItems([]);
-                setDriveStartingBalance(0);
-              }}
+              onChange={(e) => setDateRange((r) => ({ ...r, end: e.target.value }))}
             />
           </div>
           <button
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleLoadFromDrive}
-            disabled={loadingFromDrive}
+            onClick={() => loadFirst(dateRange, currencyFilter)}
+            disabled={loading || !dateRange.start || !dateRange.end || dateRange.start > dateRange.end}
             type="button"
           >
-            {loadingFromDrive ? "Завантаження..." : "Сформувати звірку"}
+            {loading ? "Завантаження..." : "Показати"}
           </button>
           <button
-            className="ml-auto bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded"
+            className="ml-auto bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded disabled:opacity-50"
             onClick={handleExport}
+            disabled={loading || rows.length === 0}
             type="button"
           >
             Експорт в Excel
           </button>
         </div>
+
+        <div className="text-sm text-gray-600">
+          Поточний баланс {currencyFilter}:{" "}
+          <b className={currentBalance >= 0 ? "text-green-700" : "text-red-700"}>{currentBalance.toFixed(2)}</b>
+        </div>
       </div>
+
+      {loadError && <div className="mb-3 text-sm text-red-600">{loadError}</div>}
 
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
@@ -394,41 +316,33 @@ const SettlementsPage = ({ items, balances, client, user }) => {
               <th className="text-left p-2">Документ</th>
               <th className="text-right p-2">Прихід (+)</th>
               <th className="text-right p-2">Витрата (-)</th>
-              {driveItems.length > 0 && <th className="text-right p-2">Сальдо</th>}
+              {hasSaldo && <th className="text-right p-2">Сальдо</th>}
               <th className="text-left p-2">Валюта</th>
             </tr>
           </thead>
           <tbody>
-            {displayItems.map((r, idx) => (
-              <tr key={idx} className="border-b hover:bg-gray-50">
+            {rows.map((r) => (
+              <tr key={r.id} className="border-b hover:bg-gray-50">
                 <td className="p-2">{fmtDate(r.date)}</td>
                 <td className="p-2">{r.docType}</td>
                 <td className="p-2">
-                  {(r.docNumber &&
-                    (r.docType === 1 ||
-                      r.docType === "1" ||
-                      (typeof r.docType === "string" && r.docType.toLowerCase().includes("видаткова")))
-                  ) ? (
-                    <button
-                      className="text-blue-600 underline"
-                      onClick={() => openDoc(r)}
-                      type="button"
-                    >
+                  {isDelivery(r) ? (
+                    <button className="text-blue-600 underline" onClick={() => openDoc(r)} type="button">
                       {r.docNumber}
                     </button>
                   ) : (
                     r.docNumber || "-"
                   )}
                 </td>
-                <td className="p-2 text-right">{r.income > 0 ? r.income.toFixed(2) : ""}</td>
-                <td className="p-2 text-right">{r.expense > 0 ? r.expense.toFixed(2) : ""}</td>
-                {driveItems.length > 0 && <td className="p-2 text-right">{Number(r.runningBalance || 0).toFixed(2)}</td>}
-                <td className="p-2">{r.currency || "UAH"}</td>
+                <td className="p-2 text-right">{r.income > 0 ? num(r.income).toFixed(2) : ""}</td>
+                <td className="p-2 text-right">{r.expense > 0 ? num(r.expense).toFixed(2) : ""}</td>
+                {hasSaldo && <td className="p-2 text-right">{num(r.balanceAfter).toFixed(2)}</td>}
+                <td className="p-2">{r.currency || currencyFilter}</td>
               </tr>
             ))}
-            {displayItems.length === 0 && (
+            {rows.length === 0 && !loading && (
               <tr>
-                <td className="p-4 text-center text-gray-500" colSpan={driveItems.length > 0 ? 7 : 6}>
+                <td className="p-4 text-center text-gray-500" colSpan={hasSaldo ? 7 : 6}>
                   Немає даних за обраний період/валюту
                 </td>
               </tr>
@@ -436,6 +350,19 @@ const SettlementsPage = ({ items, balances, client, user }) => {
           </tbody>
         </table>
       </div>
+
+      {hasMore && (
+        <div className="mt-4 text-center">
+          <button
+            className="bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded disabled:opacity-50"
+            onClick={loadMore}
+            disabled={loading}
+            type="button"
+          >
+            {loading ? "Завантаження..." : "Показати ще (старіші)"}
+          </button>
+        </div>
+      )}
 
       {/* Modal for document lines */}
       {docModalOpen && (
@@ -453,7 +380,7 @@ const SettlementsPage = ({ items, balances, client, user }) => {
               {loadingDoc ? (
                 <div className="p-8 text-center">Завантаження документа…</div>
               ) : (
-                <div className="overflow-auto">
+                <div className="overflow-auto max-h-[65vh]">
                   <table className="min-w-full text-sm">
                     <thead>
                       <tr className="border-b">
@@ -461,7 +388,6 @@ const SettlementsPage = ({ items, balances, client, user }) => {
                         <th className="text-left p-2">Найменування</th>
                         <th className="text-right p-2">К-сть</th>
                         <th className="text-right p-2">Ціна</th>
-                        <th className="text-right p-2">Знижка</th>
                         <th className="text-right p-2">Сума</th>
                         <th className="text-left p-2">Од.</th>
                         <th className="text-left p-2">Прим.</th>
@@ -472,17 +398,16 @@ const SettlementsPage = ({ items, balances, client, user }) => {
                         <tr key={i} className="border-b">
                           <td className="p-2">{l.code || ""}</td>
                           <td className="p-2">{l.name || ""}</td>
-                          <td className="p-2 text-right">{(l.qty ?? "").toString()}</td>
-                          <td className="p-2 text-right">{(l.price ?? "").toString()}</td>
-                          <td className="p-2 text-right">{(l.discount ?? "").toString()}</td>
-                          <td className="p-2 text-right">{(l.sum ?? "").toString()}</td>
+                          <td className="p-2 text-right">{l.qty != null ? String(Number(l.qty)) : ""}</td>
+                          <td className="p-2 text-right">{l.price != null ? Number(l.price).toFixed(2) : ""}</td>
+                          <td className="p-2 text-right">{l.sum != null ? Number(l.sum).toFixed(2) : ""}</td>
                           <td className="p-2">{l.unit || ""}</td>
                           <td className="p-2">{l.note || ""}</td>
                         </tr>
                       ))}
                       {docLines.length === 0 && (
                         <tr>
-                          <td className="p-4 text-center text-gray-500" colSpan={8}>
+                          <td className="p-4 text-center text-gray-500" colSpan={7}>
                             Порожній документ
                           </td>
                         </tr>

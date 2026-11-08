@@ -3,8 +3,12 @@
 const docsFop = require("./docsFop");
 const stockBeznal = require("./stockBeznal");
 const productsMain = require("./productsMain");
+const settlements = require("./settlements");
+const invoiceLines = require("./invoiceLines");
 
 const modules = {
+  [invoiceLines.name]: invoiceLines,
+  [settlements.name]: settlements,
   [docsFop.name]: docsFop,
   [stockBeznal.name]: stockBeznal,
   [productsMain.name]: productsMain,

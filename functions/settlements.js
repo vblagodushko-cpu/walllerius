@@ -249,6 +249,13 @@ exports.settlementsSyncIncremental = onSchedule(
     memory: "512MiB"     // <--- Додано: більше пам'яті для обробки CSV
   },
   async () => {
+    // Прапорець переходу на локальний агент (ukrIngest/settlements): тоді CSV із Google Drive
+    // за розкладом не читаємо, щоб два канали не перезаписували один одного.
+    const stateSnap = await db.doc(`/artifacts/${APP_ID}/public/meta/syncState/syncState`).get();
+    if (stateSnap.exists && stateSnap.data().settlementsSource === "agent") {
+      logger.info("settlementsSyncIncremental: пропущено - взаєморозрахунки синхронізує локальний агент (settlementsSource=agent)");
+      return;
+    }
     await settlementsSyncCore();
   }
 );
