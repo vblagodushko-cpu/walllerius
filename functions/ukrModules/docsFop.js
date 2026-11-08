@@ -18,7 +18,10 @@ const lineSchema = Joi.object({
   name: Joi.string().max(300).allow("").required(),
   qty: Joi.number().required(),
   price: Joi.number().allow(null).required(),
+  pricePdv: Joi.number().allow(null).optional(),
   sum: Joi.number().allow(null).required(),
+  sumPdv: Joi.number().allow(null).optional(),
+  pdvSum: Joi.number().allow(null).optional(),
   unit: Joi.string().max(30).allow("").default(""),
 });
 
@@ -33,6 +36,7 @@ const upsertSchema = Joi.object({
   sum: Joi.number().allow(null).required(),
   sumBase: Joi.number().allow(null).required(),
   sumPdv: Joi.number().allow(null).required(),
+  pdvAmount: Joi.number().allow(null).optional(),
   currency: Joi.string().max(8).allow("").required(),
   paid: Joi.boolean().required(),
   modifyTime: Joi.string().max(40).allow("").required(),
@@ -105,7 +109,9 @@ async function apply(items) {
   upserts.forEach((item, idx) => {
     const ref = refs[idx];
     const old = existing.get(ref.path);
-    if (old && old.hash === item.hash) {
+    const linesVer = 2;
+    const needLineRefresh = (old?.linesSchemaVersion ?? 1) < linesVer;
+    if (old && old.hash === item.hash && !needLineRefresh) {
       result.skipped++;
       return;
     }
@@ -120,11 +126,13 @@ async function apply(items) {
       sum: item.sum,
       sumBase: item.sumBase,
       sumPdv: item.sumPdv,
+      pdvAmount: item.pdvAmount ?? null,
       currency: item.currency,
       paid: item.paid,
       modifyTime: parseModifyTime(item.modifyTime),
       hash: item.hash,
       linesCount: item.lines.length,
+      linesSchemaVersion: linesVer,
       updatedAt: FieldValue.serverTimestamp(),
     };
     writer.add((b) => b.set(ref, header));
@@ -136,7 +144,10 @@ async function apply(items) {
           name: l.name,
           qty: l.qty,
           price: l.price,
+          pricePdv: l.pricePdv ?? null,
           sum: l.sum,
+          sumPdv: l.sumPdv ?? null,
+          pdvSum: l.pdvSum ?? null,
           unit: l.unit,
         })
       );

@@ -75,6 +75,7 @@ exports.getAccountingDocs = onCall({ region: REGION, cors: true }, async (reques
       sum: x.sum,
       sumBase: x.sumBase,
       sumPdv: x.sumPdv,
+      pdvAmount: x.pdvAmount ?? (x.sumPdv != null && x.sum != null ? Math.round((x.sumPdv - x.sum) * 100) / 100 : null),
       currency: x.currency,
       paid: x.paid === true,
       linesCount: x.linesCount || 0,
@@ -95,6 +96,34 @@ exports.getAccountingDocs = onCall({ region: REGION, cors: true }, async (reques
   };
 });
 
+/** getAccountingStock: залишки складу БЕЗГОТІВКА (приватна колекція accStockBeznal). */
+exports.getAccountingStock = onCall({ region: REGION, cors: true }, async (request) => {
+  assertAccounting(request);
+  const [snap, syncSnap] = await Promise.all([
+    db.collection(`/artifacts/${APP_ID}/private/data/accStockBeznal`).orderBy("name").limit(1000).get(),
+    db.doc(`/artifacts/${APP_ID}/private/data/accSync/stockBeznal`).get(),
+  ]);
+  const items = snap.docs.map((d) => {
+    const x = d.data();
+    return {
+      tovarId: d.id,
+      kod: x.kod || "",
+      name: x.name || "",
+      unit: x.unit || "",
+      qty: x.qty ?? 0,
+      costPrice: x.costPrice ?? null,
+      costPricePdv: x.costPricePdv ?? null,
+      sumCost: x.sumCost ?? null,
+      sumCostPdv: x.sumCostPdv ?? null,
+      lastReceiptDate: x.lastReceiptDate || "",
+      lastReceiptNumber: x.lastReceiptNumber || "",
+      costConverted: x.costConverted === true,
+    };
+  });
+  const at = syncSnap.exists ? syncSnap.data().lastIngestAt : null;
+  return { items, sync: { lastIngestAtMs: at?.toMillis ? at.toMillis() : null } };
+});
+
 /** getAccountingDocLines: рядки одного документа. */
 exports.getAccountingDocLines = onCall({ region: REGION, cors: true }, async (request) => {
   assertAccounting(request);
@@ -109,7 +138,10 @@ exports.getAccountingDocLines = onCall({ region: REGION, cors: true }, async (re
         name: x.name,
         qty: x.qty,
         price: x.price,
+        pricePdv: x.pricePdv ?? null,
         sum: x.sum,
+        sumPdv: x.sumPdv ?? null,
+        pdvSum: x.pdvSum ?? null,
         unit: x.unit,
       };
     }),
