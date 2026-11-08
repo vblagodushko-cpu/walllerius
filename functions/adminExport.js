@@ -40,7 +40,10 @@ exports.getProductsForAdmin = onCall({ region: REGION, cors: true }, async (requ
   const maxRows = Math.min(Math.max(1, Number(limit) || 50000), 200000);
 
   const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
-  const snapshot = await productsCol.get();
+  // Для «Мій склад» читаємо лише товари з ukrSkladId (вони й мають цей офер) - у 3 рази менше читань.
+  const snapshot = supplierFilter === "Мій склад"
+    ? await productsCol.where("ukrSkladId", ">", "").get()
+    : await productsCol.get();
 
   const items = [];
 

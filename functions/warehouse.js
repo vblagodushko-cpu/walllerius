@@ -15,7 +15,10 @@ const REGION = process.env.FUNCTION_REGION || "europe-central2";
 // Функція для отримання товарів складу
 async function getWarehouseProducts() {
   const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
-  const snapshot = await productsCol.get();
+  // Офер «Мій склад» мають лише товари з ukrSkladId (синк ставить його разом з офером;
+  // покриття перевірено: 1027 з оферем = 1027 з ukrSkladId). Один where, без складеного індексу.
+  const snapshot = await productsCol.where("ukrSkladId", ">", "").get();
+  logger.info("getWarehouseProducts: read", { docs: snapshot.size });
   
   const products = [];
   snapshot.forEach(doc => {
@@ -34,24 +37,57 @@ async function getWarehouseProducts() {
   return products;
 }
 
-// Функція для завантаження правил ціноутворення клієнта
-async function loadClientPricingRules(clientCode) {
+const VALID_PRICE_TYPES = ["роздріб", "ціна 1", "ціна 2", "ціна 3", "ціна опт"];
+
+// Приводить правила клієнта до єдиного вигляду (як на порталі/в placeOrderV2):
+// підтримує старі поля globalDiscount/globalMarkup та discount/markup у правилах.
+function normalizeClientRules(data) {
+  if (!data) return null;
+  let globalAdjustment = 0;
+  if (data.globalAdjustment !== undefined) {
+    globalAdjustment = Number(data.globalAdjustment || 0);
+  } else {
+    globalAdjustment = Number(data.globalMarkup || 0) - Number(data.globalDiscount || 0);
+  }
+  const rules = Array.isArray(data.rules)
+    ? data.rules.map((rule) => {
+        if (rule.adjustment !== undefined) return rule;
+        return { ...rule, adjustment: Number(rule.markup || 0) - Number(rule.discount || 0) };
+      })
+    : [];
+  return { globalAdjustment, rules };
+}
+
+/**
+ * Завантажує контекст ціноутворення клієнта:
+ *  - clientId за clientsAuth.code (приватна колекція, лише бекенд)
+ *  - priceType з public clients/{clientId} (як на порталі; fallback "роздріб")
+ *  - персональні правила clientPricingRules/{clientId} (можуть бути відсутні)
+ * Повертає null лише коли клієнта немає взагалі.
+ */
+async function loadClientPricingContext(clientCode) {
   const clientAuthCol = db.collection(`/artifacts/${APP_ID}/private/data/clientsAuth`);
   const clientSnap = await clientAuthCol.where("code", "==", String(clientCode).trim()).limit(1).get();
-  
+
   if (clientSnap.empty) {
     return null;
   }
-  
+
   const clientId = clientSnap.docs[0].id;
-  const pricingRulesCol = db.collection(`/artifacts/${APP_ID}/public/data/clientPricingRules`);
-  const rulesSnap = await pricingRulesCol.doc(clientId).get();
-  
-  if (!rulesSnap.exists) {
-    return null;
-  }
-  
-  return rulesSnap.data();
+  const base = `/artifacts/${APP_ID}/public/data`;
+  const [profileSnap, rulesSnap] = await db.getAll(
+    db.doc(`${base}/clients/${clientId}`),
+    db.doc(`${base}/clientPricingRules/${clientId}`)
+  );
+
+  const fromProfile = profileSnap.exists ? profileSnap.data()?.priceType : null;
+  const priceType = VALID_PRICE_TYPES.includes(fromProfile) ? fromProfile : "роздріб";
+
+  return {
+    clientId,
+    priceType,
+    rules: rulesSnap.exists ? normalizeClientRules(rulesSnap.data()) : null,
+  };
 }
 
 // Функція для пошуку правила в масиві правил
@@ -159,7 +195,8 @@ function roundPrice(price) {
 // Функція для генерації CSV з продуктів
 const WAREHOUSE_CSV_HEADER = ["brand", "id", "name", "stock", "price"];
 
-async function generateCsvFromProducts(products, priceType, clientCode, clientPricingRules) {
+// clientContext: { priceType, rules } з loadClientPricingContext (для режиму «ціни клієнта»)
+async function generateCsvFromProducts(products, priceType, clientCode, clientContext) {
   const rows = [WAREHOUSE_CSV_HEADER];
   
   for (const product of products) {
@@ -170,13 +207,13 @@ async function generateCsvFromProducts(products, priceType, clientCode, clientPr
     if (stock <= 0) continue;
     
     let price = 0;
-    if (clientCode && clientPricingRules) {
-      // Використовуємо правила клієнта
+    if (clientCode && clientContext) {
+      // Як на порталі: старт з priceType клієнта, зверху його персональні правила (якщо є)
       const priceResult = calculatePriceWithRules(
         { brand: product.brand, id: product.id },
         offer,
-        clientPricingRules,
-        "роздріб"
+        clientContext.rules,
+        clientContext.priceType
       );
       price = priceResult.price;
     } else if (priceType) {
@@ -226,11 +263,14 @@ exports.generateWarehousePriceListUrl = onCall({ region: REGION, cors: true }, a
   }
   
   // Валідація клієнта, якщо вказано
-  let clientPricingRules = null;
+  let clientContext = null;
   if (clientCode) {
-    clientPricingRules = await loadClientPricingRules(clientCode);
-    if (!clientPricingRules) {
-      throw new HttpsError("not-found", `Клієнт з кодом "${clientCode}" не знайдено.`);
+    if (typeof clientCode !== "string" || clientCode.trim().length > 128) {
+      throw new HttpsError("invalid-argument", "Некоректний clientCode.");
+    }
+    clientContext = await loadClientPricingContext(clientCode);
+    if (!clientContext) {
+      throw new HttpsError("not-found", `Клієнт з кодом "${clientCode.trim()}" не знайдено.`);
     }
   }
   
@@ -242,7 +282,7 @@ exports.generateWarehousePriceListUrl = onCall({ region: REGION, cors: true }, a
   const products = await getWarehouseProducts();
   
   // Генеруємо CSV
-  const csvContent = await generateCsvFromProducts(products, priceType, clientCode, clientPricingRules);
+  const csvContent = await generateCsvFromProducts(products, priceType, clientCode, clientContext);
   
   // Зберігаємо в Cloud Storage
   const bucket = storage.bucket();
@@ -361,18 +401,18 @@ exports.updateWarehousePriceList = onSchedule(
             continue;
           }
           
-          // Завантажуємо правила клієнта, якщо потрібно
-          let clientPricingRules = null;
+          // Завантажуємо контекст цін клієнта (priceType + правила), якщо потрібно
+          let clientContext = null;
           if (clientCode) {
-            clientPricingRules = await loadClientPricingRules(clientCode);
-            if (!clientPricingRules) {
+            clientContext = await loadClientPricingContext(clientCode);
+            if (!clientContext) {
               logger.warn(`Client ${clientCode} not found, skipping URL ${token}`);
               continue;
             }
           }
           
           // Генеруємо новий CSV
-          const csvContent = await generateCsvFromProducts(products, priceType, clientCode, clientPricingRules);
+          const csvContent = await generateCsvFromProducts(products, priceType, clientCode, clientContext);
           
           // Оновлюємо файл в Cloud Storage
           const file = bucket.file(filePath);
