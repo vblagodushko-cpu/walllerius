@@ -518,6 +518,14 @@ exports.ukrSkladSync = onSchedule(
   },
   async () => {
     try {
+      // Прапорець переходу на локальний агент (ukrIngest/productsMain): тоді CSV із Google Drive
+      // за розкладом не читаємо, щоб два канали не перезаписували один одного.
+      // Ручний triggerUkrSkladSync лишається резервним каналом.
+      const stateSnap = await db.doc(`/artifacts/${APP_ID}/public/meta/syncState/syncState`).get();
+      if (stateSnap.exists && stateSnap.data().mainSyncSource === "agent") {
+        logger.info("ukrSkladSync: пропущено - основний склад синхронізує локальний агент (mainSyncSource=agent)");
+        return;
+      }
       await performUkrSkladSync(false);
     } catch (e) {
       logger.error("Scheduled ukrSkladSync failed:", e);
