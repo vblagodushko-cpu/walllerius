@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase-config';
-import { offerSourceLabel, WAREHOUSE_SUPPLIER } from '../utils/cartStockWarning.js';
+import { offerSourceLabel, WAREHOUSE_SUPPLIER, availableStock } from '../utils/cartStockWarning.js';
 import { calculateProductPrice } from '../utils/productPricing.js';
 import AddToCartModal from './AddToCartModal.jsx';
 import ProductDetailModal from './ProductDetailModal.jsx';
@@ -107,7 +107,7 @@ export default function FeaturedProductCards({
       const warehouseOffer = (product.offers || []).find(
         (o) => o.supplier === WAREHOUSE_SUPPLIER
       );
-      if (!warehouseOffer || Number(warehouseOffer.stock) <= 0) continue;
+      if (!warehouseOffer || availableStock(product, warehouseOffer) <= 0) continue;
 
       const offer = product.bestOffer || warehouseOffer;
       const price = calculateProductPrice({
@@ -135,8 +135,8 @@ export default function FeaturedProductCards({
       name: product.name,
       supplier: offer.supplier,
       selectedSupplier: offer.supplier,
-      stock: offer.stock ?? 0,
-      selectedOffer: offer,
+      stock: availableStock(product, offer),
+      selectedOffer: { ...offer, stock: availableStock(product, offer) },
       price,
     });
   };
@@ -146,7 +146,7 @@ export default function FeaturedProductCards({
 
   const renderCard = ({ product, offer, price }) => {
     const priceText = price > 0 ? `${price.toFixed(2)} ${currencySymbol}` : '—';
-    const stock = Number(offer.stock) || 0;
+    const stock = availableStock(product, offer);
     const stockText = stock > 20 ? '20+' : stock;
     const sourceLabel = offerSourceLabel(offer.supplier);
     const sourceClass =

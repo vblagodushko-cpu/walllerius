@@ -19,6 +19,7 @@ import {
   buildStockWarningLines,
   confirmStockOverOrder,
   warehouseStockFromProductDoc,
+  availableStock,
   WAREHOUSE_SUPPLIER,
 } from './utils/cartStockWarning.js';
 
@@ -31,7 +32,7 @@ function filterFeaturedWithWarehouseStock(products) {
       const warehouseOffer = (product.offers || []).find(
         (o) => o.supplier === WAREHOUSE_SUPPLIER
       );
-      if (!warehouseOffer || Number(warehouseOffer.stock) <= 0) return null;
+      if (!warehouseOffer || availableStock(product, warehouseOffer) <= 0) return null;
       return { ...product, bestOffer: warehouseOffer };
     })
     .filter(Boolean);

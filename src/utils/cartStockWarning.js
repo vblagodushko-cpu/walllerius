@@ -14,9 +14,23 @@ export function isWarehouseLine(item) {
   return isWarehouseSupplier(item?.supplier);
 }
 
+/**
+ * Доступно клієнту: для «Мій склад» = stock − warehouseReserved (≥ 0).
+ * @param {object|null} product — документ товару (для warehouseReserved)
+ * @param {object|null} offer — офер (stock, supplier)
+ */
+export function availableStock(product, offer) {
+  const stock = Number(offer?.stock);
+  const base = Number.isFinite(stock) ? stock : 0;
+  if (!isWarehouseSupplier(offer?.supplier)) return base;
+  const reserved = Number(product?.warehouseReserved) || 0;
+  return Math.max(0, base - reserved);
+}
+
 /** Фактичний залишок на рядку кошика (число; для перевірок не використовуємо «20+» з UI). */
 export function getCartLineStock(item) {
   if (!item) return null;
+  // У кошику stock уже має бути «вільно» (після availableStock при додаванні).
   const raw = item.stock ?? item.selectedOffer?.stock;
   if (raw === undefined || raw === null || raw === '') return null;
   const n = Number(raw);
@@ -107,9 +121,10 @@ export function confirmStockOverOrder(lines, options) {
   return window.confirm(msg);
 }
 
-/** З документа products — stock офера «Мій склад». */
+/** З документа products — доступний залишок офера «Мій склад» (мінус резерв). */
 export function warehouseStockFromProductDoc(data) {
   if (!data?.offers || !Array.isArray(data.offers)) return 0;
   const offer = data.offers.find((o) => o.supplier === WAREHOUSE_SUPPLIER);
-  return Number(offer?.stock) || 0;
+  if (!offer) return 0;
+  return availableStock(data, offer);
 }

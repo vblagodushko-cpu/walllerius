@@ -1135,22 +1135,51 @@ exports.placeOrderV2 = onCall({
     orderNumber = next;
   });
 
-  // Create order
+  // Створення замовлення + м'яке резервування «Мій склад» в одній транзакції
+  // (журнал + warehouseReserved; тригер onOrderReservationSync після коміту дасть delta=0).
+  const {
+    claimReservationsInTx,
+    reservationsRef,
+    productRef: warehouseProductRef,
+    WAREHOUSE_SUPPLIER,
+  } = require("./reservations");
+
   const ref = db.collection(`/artifacts/${APP_ID}/public/data/orders`).doc();
-  await ref.set({
-    clientId: uid,
-    items: orderItems,
-    total: total,
-    status: "Нове",
-    orderNumber,
-    archived: false,
-    clientRequestId: lockId || null,
-    clientName: str(clientName, 200),
-    clientPhone: str(clientPhone, 50),
-    clientEmail: str(clientEmail, 200),
-    note: str(note, 2000),
-    createdAt: FieldValue.serverTimestamp(),
-    source: "portal-v2",
+  const warehouseDocIds = [
+    ...new Set(
+      orderItems
+        .filter((it) => it.supplier === WAREHOUSE_SUPPLIER && it.docId)
+        .map((it) => String(it.docId))
+    ),
+  ];
+
+  await db.runTransaction(async (tx) => {
+    const snapsByDocId = new Map();
+    for (const docId of warehouseDocIds) {
+      snapsByDocId.set(docId, await tx.get(warehouseProductRef(docId)));
+    }
+    const journal = claimReservationsInTx(tx, orderItems, snapsByDocId);
+    if (Object.keys(journal).length) {
+      tx.set(reservationsRef(ref.id), {
+        items: journal,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.set(ref, {
+      clientId: uid,
+      items: orderItems,
+      total: total,
+      status: "Нове",
+      orderNumber,
+      archived: false,
+      clientRequestId: lockId || null,
+      clientName: str(clientName, 200),
+      clientPhone: str(clientPhone, 50),
+      clientEmail: str(clientEmail, 200),
+      note: str(note, 2000),
+      createdAt: FieldValue.serverTimestamp(),
+      source: "portal-v2",
+    });
   });
 
   // Update order counts (status is "Нове")
@@ -2023,3 +2052,8 @@ try { Object.assign(exports, require("./masterDataExcel")); } catch (e) { logger
 try { Object.assign(exports, require("./ukrIngest")); } catch (e) { logger.warn("ukrIngest module not found", String(e)); }
 try { Object.assign(exports, require("./accounting")); } catch (e) { logger.warn("accounting module not found", String(e)); }
 try { Object.assign(exports, require("./accountants")); } catch (e) { logger.warn("accountants module not found", String(e)); }
+try {
+  const reservations = require("./reservations");
+  exports.onOrderReservationSync = reservations.onOrderReservationSync;
+  exports.reconcileReservations = reservations.reconcileReservations;
+} catch (e) { logger.warn("reservations module not found", String(e)); }

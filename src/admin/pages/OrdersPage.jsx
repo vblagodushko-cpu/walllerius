@@ -54,7 +54,7 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
   // Залишки для товарів зі складу (для виявлення нестачі)
   const [stockMap, setStockMap] = useState({});
   
-  // Завантаження залишків тільки для товарів "Мій склад"
+  // Завантаження доступного залишку («вільно») для товарів "Мій склад"
   useEffect(() => {
     const loadWarehouseStocks = async () => {
       const map = {};
@@ -67,7 +67,9 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
           if (snap.exists()) {
             const data = snap.data();
             const offer = (data.offers || []).find(o => o.supplier === "Мій склад");
-            map[it.docId] = offer?.stock ?? 0;
+            const stock = Number(offer?.stock) || 0;
+            const reserved = Number(data.warehouseReserved) || 0;
+            map[it.docId] = Math.max(0, stock - reserved);
           }
         } catch (e) {
           console.warn("Failed to load stock for", it.docId, e);
@@ -285,7 +287,7 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                 <th className="px-2 py-2">Артикул</th>
                 <th className="px-2 py-2 max-w-[200px]">Назва</th>
                 <th className="px-2 py-2 text-right">Ціна</th>
-                <th className="px-2 py-2 text-center">Залишок</th>
+                <th className="px-2 py-2 text-center">Вільно</th>
                 <th className="px-2 py-2 text-center">Замовл.</th>
                 <th className="px-2 py-2 text-center">Скас.</th>
                 <th className="px-2 py-2 text-center">Підтв.</th>
@@ -380,27 +382,32 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
                         })()}
                       </div>
                     </td>
-                    {/* Залишок */}
+                    {/* Вільно (+ резерв рядка) */}
                     <td className="px-2 py-1.5 text-center text-xs text-slate-500">
                       {(() => {
-                        // Тільки для "Мій склад" перевіряємо нестачу
                         if (it.supplier === "Мій склад" && it.docId && stockMap[it.docId] !== undefined) {
                           const stock = stockMap[it.docId];
-                          if (it.quantity > stock) {
-                            // Нестача — показуємо залишок
-                            return <span className="text-red-600 font-medium">{stock}</span>;
-                          }
+                          const reservedQty = Number(it.reservedQty) || 0;
+                          const shortage = it.quantity > stock + reservedQty;
+                          return (
+                            <span className={shortage ? "text-red-600 font-medium" : ""}>
+                              {stock}
+                              {reservedQty > 0 ? (
+                                <span className="block text-[10px] text-slate-400">резерв {reservedQty}</span>
+                              ) : null}
+                            </span>
+                          );
                         }
                         return "—";
                       })()}
                     </td>
                     {/* Замовлено */}
                     <td className={`px-2 py-1.5 text-center font-medium ${
-                      // Червоний фон якщо замовлено більше ніж є на складі
+                      // Червоний фон якщо замовлено більше, ніж вільно + резерв цього рядка
                       it.supplier === "Мій склад" && 
                       it.docId && 
                       stockMap[it.docId] !== undefined && 
-                      it.quantity > stockMap[it.docId]
+                      it.quantity > stockMap[it.docId] + (Number(it.reservedQty) || 0)
                         ? "bg-red-100 text-red-700 rounded"
                         : ""
                     }`}>

@@ -7,6 +7,7 @@ import {
   getPriceFromPublicPrices,
   filterAndSortOffers,
 } from '../utils/productPricing.js';
+import { availableStock } from '../utils/cartStockWarning.js';
 import AddToCartModal from './AddToCartModal.jsx';
 import ProductDetailModal from './ProductDetailModal.jsx';
 
@@ -144,8 +145,9 @@ const ProductCatalog = ({
           id: product.id || "",
           name: product.name || "",
           supplier: offer.supplier || "",
-          stock: offer.stock ?? 0,
+          stock: availableStock(product, offer),
           publicPrices: offer.publicPrices || {},
+          warehouseReserved: Number(product.warehouseReserved) || 0,
         });
       }
     }

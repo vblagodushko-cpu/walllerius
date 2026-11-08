@@ -1,4 +1,5 @@
 /** Спільна логіка цін для каталогу та рекомендованих карток. */
+import { availableStock } from "./cartStockWarning.js";
 
 export function findRule(rules, type, brand, id, supplier) {
   if (!rules?.rules || !Array.isArray(rules.rules)) return null;
@@ -136,7 +137,7 @@ export function filterAndSortOffers(
       filteredOffers = filteredOffers.filter((o) => o.supplier === "Мій склад");
     }
     if (showOnlyInStock) {
-      filteredOffers = filteredOffers.filter((o) => (o.stock || 0) > 0);
+      filteredOffers = filteredOffers.filter((o) => availableStock(product, o) > 0);
     }
   }
 
