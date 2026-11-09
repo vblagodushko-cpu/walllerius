@@ -15,6 +15,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../../firebase-config";
 import Tabs from "../components/Tabs.jsx";
+import ProductMasterModal from "../components/ProductMasterModal.jsx";
 
 const appId = import.meta.env.VITE_PROJECT_ID || "embryo-project";
 const PRODUCTS_PATH = `/artifacts/${appId}/public/data/products`;
@@ -58,6 +59,19 @@ const isRepriceMarkStale = (mark) => {
   const date = getMarkDate(mark);
   return date ? Date.now() - date.getTime() > REPRICE_MARK_STALE_MS : false;
 };
+
+const EditProductIconButton = ({ onClick }) => (
+  <button
+    type="button"
+    className="p-0.5 rounded hover:bg-emerald-50 text-slate-400 hover:text-emerald-700 transition-colors"
+    title="Редагувати товар"
+    onClick={onClick}
+  >
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M4 20h4.5L19.5 9a2.5 2.5 0 00-3.536-3.536L5 15.5V20z" />
+    </svg>
+  </button>
+);
 
 /**
  * Розділ ЗАКУПКИ
@@ -129,6 +143,18 @@ export default function PurchasesPage({ setStatus }) {
   const [excludedBrandInput, setExcludedBrandInput] = useState("");
   const [savingExcludedBrands, setSavingExcludedBrands] = useState(false);
   const [exclusionsLoaded, setExclusionsLoaded] = useState(false);
+
+  const [editProduct, setEditProduct] = useState(null);
+
+  const applyLocalProductPatch = useCallback((docId, patch) => {
+    const apply = (p) => (p.docId === docId ? { ...p, ...patch, name: patch.name || p.name } : p);
+    setProducts((prev) => prev.map(apply));
+    setRepriceProducts((prev) => ({
+      cheaper: (prev.cheaper || []).map(apply),
+      expensive: (prev.expensive || []).map(apply),
+      unavailable: (prev.unavailable || []).map(apply),
+    }));
+  }, []);
 
   // Стан модалки створення/редагування замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -1079,6 +1105,7 @@ export default function PurchasesPage({ setStatus }) {
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                               </svg>
                             </button>
+                            <EditProductIconButton onClick={() => setEditProduct(product)} />
                           </div>
                         </td>
                         <td className="px-3 py-2">{product.name || "—"}</td>
@@ -1400,6 +1427,7 @@ export default function PurchasesPage({ setStatus }) {
                                   </svg>
                                 </button>
                               )}
+                              <EditProductIconButton onClick={() => setEditProduct(product)} />
                             </div>
                           </td>
                           <td className="px-3 py-2">
@@ -1509,6 +1537,15 @@ export default function PurchasesPage({ setStatus }) {
             </>
           )}
         </div>
+      )}
+
+      {editProduct && (
+        <ProductMasterModal
+          product={editProduct}
+          onClose={() => setEditProduct(null)}
+          onSaved={applyLocalProductPatch}
+          onStatus={(s) => setStatus?.({ type: s.type, message: s.message || s.text })}
+        />
       )}
 
       {/* Модалка створення замовлення */}
