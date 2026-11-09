@@ -245,6 +245,23 @@ async function generateCsvFromProducts(products, priceType, clientCode, clientCo
   return csv;
 }
 
+/** save() створює нову версію об'єкта без публічного ACL — повертаємо allUsers:READER. */
+async function savePublicCsv(file, csvContent) {
+  await file.save(csvContent, {
+    resumable: false,
+    predefinedAcl: "publicRead",
+    metadata: {
+      contentType: "text/csv; charset=utf-8",
+      cacheControl: "public, max-age=3600",
+    },
+  });
+  try {
+    await file.makePublic();
+  } catch (e) {
+    logger.warn("makePublic after save failed", { name: file.name, error: e.message });
+  }
+}
+
 /**
  * generateWarehousePriceListUrl - згенерувати URL для прайс-листу складу
  */
@@ -288,15 +305,7 @@ exports.generateWarehousePriceListUrl = onCall({ region: REGION, cors: true }, a
   const bucket = storage.bucket();
   const file = bucket.file(fileName);
   
-  await file.save(csvContent, {
-    metadata: {
-      contentType: "text/csv; charset=utf-8",
-      cacheControl: "public, max-age=3600"
-    }
-  });
-  
-  // Робимо файл публічним
-  await file.makePublic();
+  await savePublicCsv(file, csvContent);
   
   // Публічний URL
   const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
@@ -416,12 +425,7 @@ exports.updateWarehousePriceList = onSchedule(
           
           // Оновлюємо файл в Cloud Storage
           const file = bucket.file(filePath);
-          await file.save(csvContent, {
-            metadata: {
-              contentType: "text/csv; charset=utf-8",
-              cacheControl: "public, max-age=3600"
-            }
-          });
+          await savePublicCsv(file, csvContent);
           
           // Оновлюємо timestamp в Firestore
           await doc.ref.update({

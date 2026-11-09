@@ -1279,7 +1279,7 @@ function PortalApp() {
           <Pill tone={eurTone}>Баланс EUR: <b>{Number(balances.EUR).toFixed(2)}</b></Pill>
             </>
           ) : (
-            <Pill tone="gray"><span className="text-xs">БАЛАНС: Функціонал не увімкнено, зверніться до менеджера</span></Pill>
+            <Pill tone="gray"><span className="text-xs">Баланс ще не синхронізовано</span></Pill>
           )}
           <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
         </div>

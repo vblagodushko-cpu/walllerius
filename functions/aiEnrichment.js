@@ -23,7 +23,7 @@ const {
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
 function getGeminiApiKey() {
   return String(process.env.GEMINI_API_KEY || "").trim();
@@ -236,7 +236,6 @@ async function callGemini(apiKey, systemPrompt, userPrompt) {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
       generationConfig: {
-        temperature: 0.2,
         responseMimeType: "application/json",
       },
     }),

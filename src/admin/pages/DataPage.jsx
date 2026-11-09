@@ -1970,8 +1970,9 @@ function DangerousActions({ setStatus }) {
             <span>Я розумію наслідки і хочу видалити всі ledger-операції та баланси взаєморозрахунків</span>
           </label>
           <p className="text-xs text-slate-500 mb-3">
-            Видаляє всі операції з ledger-UAH, ledger-EUR та баланси з колекції balances для всіх клієнтів. 
-            Дані будуть автоматично відновлені під час наступної синхронізації (13:00 або 18:00 у будні).
+            Видаляє всі операції з ledger-UAH, ledger-EUR та баланси з колекції balances для всіх клієнтів.
+            Відновлення — лише після наступної відправки журналу локальним агентом UkrSklad (ukrIngest, модуль settlements).
+            Розклад 13:00/18:00 із Google Drive не використовується, якщо в syncState увімкнено джерело «agent».
           </p>
           <button className={`${danger} disabled:opacity-60`} disabled={!confirmSettlements} onClick={runDeleteSettlements}>
             Видалити всі взаєморозрахунки
