@@ -22,6 +22,7 @@ function clearMasterDataCache() {
   productMasterDataCache = null;
   brandSynonymsCache = null;
   cacheExpiry = 0;
+  productDocIdCache.clear();
 }
 
 
@@ -99,6 +100,61 @@ const normalizeBrand = async (v) => {
   return brandSynonymsCache.get(key) || display;
 };
 const normalizeSupplier = (v) => str(v, 120).replace(/\s{2,}/g, " ").trim();
+
+/** docId з уже нормалізованого бренду й артикула. Регістр бренду входить в id. */
+function buildProductDocId(brand, article) {
+  const sanitizedBrand = sanitizeDocId(brand);
+  return `${sanitizedBrand}-${article}`
+    .replace(/\s+/g, "-")
+    .replace(/[^\w.-]/g, "_");
+}
+
+// Щоб повторні рядки одного прайсу не робили зайвий where на кожен upsert.
+const productDocIdCache = new Map();
+const PRODUCT_DOC_CACHE_MS = 15 * 60 * 1000;
+
+/**
+ * Картка з тим самим артикулом і брендом (без урахування регістру) вже може
+ * мати інший docId (старий регістр, до синоніма). Пишемо в неї, а не створюємо другу.
+ * Якщо є документ з канонічним docId — він головний.
+ */
+async function resolveProductDocId(brand, article) {
+  const cacheKey = `${normalizeBrandKey(brand)}__${article}`;
+  const hit = productDocIdCache.get(cacheKey);
+  if (hit && hit.exp > Date.now()) return hit.id;
+
+  const canonicalId = buildProductDocId(brand, article);
+  const snap = await db
+    .collection(`/artifacts/${APP_ID}/public/data/products`)
+    .where("id", "==", article)
+    .limit(25)
+    .get();
+
+  const brandKey = normalizeBrandKey(brand);
+  const matches = snap.docs.filter(
+    (d) => normalizeBrandKey(d.data()?.brand) === brandKey
+  );
+  const exact = matches.find((d) => d.id === canonicalId);
+  let chosen = canonicalId;
+  if (exact) {
+    chosen = exact.id;
+  } else if (matches.length) {
+    matches.sort((a, b) => {
+      const ta = a.data()?.updatedAt?.toMillis?.() || 0;
+      const tb = b.data()?.updatedAt?.toMillis?.() || 0;
+      return tb - ta;
+    });
+    chosen = matches[0].id;
+    logger.info("resolveProductDocId: існуюча картка замість нової", {
+      canonicalId,
+      chosen,
+      article,
+    });
+  }
+
+  productDocIdCache.set(cacheKey, { id: chosen, exp: Date.now() + PRODUCT_DOC_CACHE_MS });
+  return chosen;
+}
 
 /**
  * Sanitize document ID - замінює небезпечні символи (/, \, та інші) на безпечні
@@ -287,13 +343,8 @@ async function upsertProduct({ supplier, brand, id, name, stock, publicPrices, c
   const stockNum = Number.isFinite(stock) ? stock : (num(stock) ?? 0);
   if (!supplier || !brand || !article) throw new Error("upsertProduct: supplier/brand/id required.");
 
-  // НОВИЙ docId (без supplier) - використовуємо sanitizeDocId для безпеки
-  const sanitizedBrand = sanitizeDocId(brand);
-  const docId = `${sanitizedBrand}-${article}`
-    .replace(/\s+/g, "-")
-    .replace(/[^\w.-]/g, "_");
-  
-  const productKey = docId; // brand-article
+  const docId = await resolveProductDocId(brand, article);
+  const productKey = docId;
   const productRef = db.doc(`/artifacts/${APP_ID}/public/data/products/${docId}`);
   const supplierProductRef = db.doc(`/artifacts/${APP_ID}/public/data/supplierProducts/${supplier}-${productKey}`);
 
@@ -391,61 +442,55 @@ async function removeProduct({ supplier, id, brand }) {
   const publicColl = db.collection(`/artifacts/${APP_ID}/public/data/products`);
   const supplierProductsCol = db.collection(`/artifacts/${APP_ID}/public/data/supplierProducts`);
 
-  // Нормалізуємо brand для формування docId (ДО транзакції)
-  let brandNorm = null;
-  let productRef = null;
-  
+  let refs = [];
   if (brand) {
-    brandNorm = await normalizeBrand(brand);
-    const sanitizedBrand = sanitizeDocId(brandNorm);
-    const docId = `${sanitizedBrand}-${article}`
-      .replace(/\s+/g, "-")
-      .replace(/[^\w.-]/g, "_");
-    productRef = publicColl.doc(docId);
+    const brandNorm = await normalizeBrand(brand);
+    const snap = await publicColl.where("id", "==", article).limit(25).get();
+    const brandKey = normalizeBrandKey(brandNorm);
+    const matches = snap.docs.filter(
+      (d) => normalizeBrandKey(d.data()?.brand) === brandKey
+    );
+    refs = matches.length
+      ? matches.map((d) => d.ref)
+      : [publicColl.doc(buildProductDocId(brandNorm, article))];
+    productDocIdCache.delete(`${brandKey}__${article}`);
   } else {
-    // Якщо немає brand - шукаємо по article (рідкісний випадок)
     const snap = await publicColl.where("id", "==", article).limit(1).get();
     if (snap.empty) return;
-    productRef = snap.docs[0].ref;
+    refs = [snap.docs[0].ref];
   }
 
-  // Використовуємо транзакцію для безпечного видалення пропозиції
-  return await db.runTransaction(async (tx) => {
-    const productSnap = await tx.get(productRef);
-    if (!productSnap.exists) return;
-    
-    const productData = productSnap.data();
+  for (const productRef of refs) {
+    await db.runTransaction(async (tx) => {
+      const productSnap = await tx.get(productRef);
+      if (!productSnap.exists) return;
 
-    // Перевіряємо, чи є пропозиція від постачальника
-    if (!productData.offers || !Array.isArray(productData.offers)) return;
-    
-    const offerIndex = productData.offers.findIndex(o => o.supplier === supplierNorm);
-    if (offerIndex === -1) return; // Пропозиції немає
+      const productData = productSnap.data();
+      if (!productData.offers || !Array.isArray(productData.offers)) return;
 
-    // Видаляємо пропозицію з масиву
-    const updatedOffers = [...productData.offers];
-    updatedOffers.splice(offerIndex, 1);
+      const offerIndex = productData.offers.findIndex((o) => o.supplier === supplierNorm);
+      if (offerIndex === -1) return;
 
-    // Якщо offers[] стає порожнім - видаляємо весь документ
-    if (updatedOffers.length === 0) {
-      tx.delete(productRef);
-    } else {
-      // Оновлюємо документ без видаленої пропозиції
-      const updatedProductData = {
-        ...productData,
-        offers: updatedOffers,
-        updatedAt: FieldValue.serverTimestamp()
-      };
-      tx.set(productRef, updatedProductData, { merge: true });
-    }
+      const updatedOffers = [...productData.offers];
+      updatedOffers.splice(offerIndex, 1);
 
-    // Видаляємо запис з supplierProducts
-    // ВАЖЛИВО: використовуємо sanitizeDocId для бренду, щоб уникнути проблем з "/" та "()"
-    const sanitizedBrand = sanitizeDocId(productData.brand || "");
-    const productKey = `${sanitizedBrand}-${normalizeArticle(productData.id || "")}`;
-    const supplierProductRef = supplierProductsCol.doc(`${supplierNorm}-${productKey}`);
-    tx.delete(supplierProductRef);
-  });
+      if (updatedOffers.length === 0) {
+        tx.delete(productRef);
+      } else {
+        tx.set(
+          productRef,
+          {
+            ...productData,
+            offers: updatedOffers,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      tx.delete(supplierProductsCol.doc(`${supplierNorm}-${productRef.id}`));
+    });
+  }
 }
 
 module.exports = {
