@@ -1281,6 +1281,7 @@ function PortalApp() {
           ) : (
             <Pill tone="gray"><span className="text-xs">Баланс ще не синхронізовано</span></Pill>
           )}
+          <a href="/portal-next.html" className="px-3 py-2 rounded-xl border border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-sm">Новий вигляд</a>
           <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
         </div>
       </header>

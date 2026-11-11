@@ -23,6 +23,10 @@
         "destination": "/portal.html"
       },
       {
+        "source": "/portal-next",
+        "destination": "/portal-next.html"
+      },
+      {
         "source": "/admin",
         "destination": "/admin.html"
       },
