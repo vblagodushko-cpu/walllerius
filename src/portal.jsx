@@ -1227,11 +1227,49 @@ function PortalApp() {
   const uahTone = balances.UAH >= 0 ? 'green' : 'red';
   const eurTone = balances.EUR >= 0 ? 'green' : 'red';
 
+  const headerNavBtn = (id, label) => (
+    <button
+      type="button"
+      className={`rounded-lg px-2 py-1.5 text-xs font-medium whitespace-nowrap sm:px-2.5 sm:text-sm ${
+        view === id ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+      }`}
+      onClick={() => setView(id)}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
-      <header className="bg-white border-b mb-4 p-4 flex items-center justify-between rounded-lg flex-wrap gap-3">
-        {/* Пошук по артикулу */}
-        <div className="flex items-center gap-2 flex-1 max-w-md">
+      <header className="bg-white border-b mb-4 rounded-lg p-3 sm:p-4 flex flex-wrap items-center gap-3 sm:gap-4">
+        <button
+          type="button"
+          onClick={() => setView('products')}
+          className={`group flex shrink-0 items-center gap-2.5 rounded-2xl border px-3 py-2 text-left shadow-sm transition-all sm:px-3.5 sm:py-2.5 ${
+            view === 'products'
+              ? 'border-transparent bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 text-white shadow-indigo-200/80'
+              : 'border-indigo-100 bg-gradient-to-br from-white to-indigo-50/80 text-indigo-950 hover:border-indigo-200 hover:shadow-md'
+          }`}
+        >
+          <span
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+              view === 'products' ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'
+            }`}
+            aria-hidden
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+          </span>
+          <span className="leading-tight">
+            <span className={`block text-[10px] font-semibold uppercase tracking-wider sm:text-[11px] ${view === 'products' ? 'text-indigo-100' : 'text-indigo-500'}`}>
+              Онлайн
+            </span>
+            <span className="block text-sm font-semibold tracking-tight sm:text-[15px]">Каталог продукції</span>
+          </span>
+        </button>
+
+        <div className="flex min-w-[12rem] flex-1 items-center gap-2">
           <input
             type="text"
             placeholder="Пошук по артикулу (напр. KL 200, 12345)"
@@ -1250,39 +1288,31 @@ function PortalApp() {
             {isSearchingArticle ? 'Пошук...' : 'Знайти'}
           </button>
         </div>
-        
-        {/* Курс євро */}
-        {uahRate && (
-          <div className="text-xs text-gray-600 whitespace-nowrap">
-            Курс {uahRate.toFixed(2)}
-          </div>
-        )}
-        
-        <div className="flex items-center gap-2">
+
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
+          <nav className="flex items-center gap-0.5 rounded-xl border border-gray-100 bg-gray-50 p-1" aria-label="Розділи порталу">
+            {headerNavBtn('orders', 'Замовлення')}
+            {headerNavBtn('settlements', 'Взаєморозрахунки')}
+            {headerNavBtn('profile', 'Профіль')}
+          </nav>
+          {uahRate ? (
+            <span className="hidden text-xs text-gray-500 lg:inline whitespace-nowrap">Курс {uahRate.toFixed(2)}</span>
+          ) : null}
           {hasBalances ? (
             <>
-          <Pill tone={uahTone}>Баланс UAH: <b>{Number(balances.UAH).toFixed(2)}</b></Pill>
-          <Pill tone={eurTone}>Баланс EUR: <b>{Number(balances.EUR).toFixed(2)}</b></Pill>
+              <Pill tone={uahTone}>Баланс UAH: <b>{Number(balances.UAH).toFixed(2)}</b></Pill>
+              <Pill tone={eurTone}>Баланс EUR: <b>{Number(balances.EUR).toFixed(2)}</b></Pill>
             </>
           ) : (
             <Pill tone="gray"><span className="text-xs">Баланс ще не синхронізовано</span></Pill>
           )}
-          <a href="/portal-next.html" className="px-3 py-2 rounded-xl border border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-sm">Новий вигляд</a>
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
+          <button type="button" className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto">
         {/* Навігація та фільтри */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 mb-5">
-          {/* Навігація - горизонтальний скрол на мобільних */}
-          <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'products' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('products')}>Товари</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'orders' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('orders')}>Замовлення</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'settlements' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('settlements')}>Взаєморозрахунки</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'profile' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('profile')}>Профіль</button>
-          </div>
-
           {/* Фільтри для відображення товарів - тільки для розділу "Товари" */}
           {view === 'products' && (
             <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 bg-indigo-50 border border-black rounded-lg px-3 py-2 shadow-sm">
