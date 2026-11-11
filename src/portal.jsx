@@ -64,17 +64,6 @@ function clampCatalogEdgeTop(px, vh) {
   return Math.min(Math.max(px, lo), hi);
 }
 
-/** UI helper */
-function Pill({ children, tone='gray' }) {
-  const tones = {
-    gray: 'bg-gray-100 text-gray-800',
-    green: 'bg-green-100 text-green-800',
-    red: 'bg-red-100 text-red-800',
-    indigo: 'bg-indigo-100 text-indigo-800',
-  };
-  return <span className={`px-3 py-1 rounded-xl text-sm ${tones[tone] || tones.gray}`}>{children}</span>;
-}
-
 /** Profile (with Change Password) */
 function ProfileTab({ client, user, onChangePassword, changing }) {
   const safe = client || { name: user?.displayName || user?.phoneNumber || 'Клієнт', priceType: 'роздріб' };
@@ -1224,13 +1213,12 @@ function PortalApp() {
     };
   }, []);
 
-  const uahTone = balances.UAH >= 0 ? 'green' : 'red';
-  const eurTone = balances.EUR >= 0 ? 'green' : 'red';
+  const moneyTone = (value) => (Number(value) >= 0 ? 'text-emerald-700' : 'text-red-700');
 
-  const headerNavBtn = (id, label) => (
+  const sectionBtn = (id, label, compact = false) => (
     <button
       type="button"
-      className={`rounded-lg px-2 py-1.5 text-xs font-medium whitespace-nowrap sm:px-2.5 sm:text-sm ${
+      className={`${compact ? 'px-2 py-1 text-xs' : 'h-8 px-3 text-sm'} rounded-lg font-medium whitespace-nowrap ${
         view === id ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
       }`}
       onClick={() => setView(id)}
@@ -1241,72 +1229,72 @@ function PortalApp() {
 
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
-      <header className="bg-white border-b mb-4 rounded-lg p-3 sm:p-4 flex flex-wrap items-center gap-3 sm:gap-4">
-        <button
-          type="button"
-          onClick={() => setView('products')}
-          className={`group flex shrink-0 items-center gap-2.5 rounded-2xl border px-3 py-2 text-left shadow-sm transition-all sm:px-3.5 sm:py-2.5 ${
-            view === 'products'
-              ? 'border-transparent bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 text-white shadow-indigo-200/80'
-              : 'border-indigo-100 bg-gradient-to-br from-white to-indigo-50/80 text-indigo-950 hover:border-indigo-200 hover:shadow-md'
-          }`}
-        >
-          <span
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-              view === 'products' ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'
+      <header className="mb-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <div className="flex items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4">
+          <button
+            type="button"
+            onClick={() => setView('products')}
+            className={`flex h-10 shrink-0 items-center gap-2 rounded-xl px-3 text-sm font-semibold ${
+              view === 'products'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
             }`}
-            aria-hidden
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
             </svg>
-          </span>
-          <span className="leading-tight">
-            <span className={`block text-[10px] font-semibold uppercase tracking-wider sm:text-[11px] ${view === 'products' ? 'text-indigo-100' : 'text-indigo-500'}`}>
-              Онлайн
-            </span>
-            <span className="block text-sm font-semibold tracking-tight sm:text-[15px]">Каталог продукції</span>
-          </span>
-        </button>
-
-        <div className="flex min-w-[12rem] flex-1 items-center gap-2">
-          <input
-            type="text"
-            placeholder="Пошук по артикулу (напр. KL 200, 12345)"
-            value={articleSearch}
-            onChange={(e) => setArticleSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleArticleSearch();
-            }}
-            className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-          />
-          <button
-            onClick={handleArticleSearch}
-            disabled={isSearchingArticle}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm whitespace-nowrap"
-          >
-            {isSearchingArticle ? 'Пошук...' : 'Знайти'}
+            <span className="hidden sm:inline">Каталог продукції</span>
+            <span className="sm:hidden">Каталог</span>
           </button>
+
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <input
+              type="text"
+              placeholder="Артикул, напр. KL 200"
+              value={articleSearch}
+              onChange={(e) => setArticleSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleArticleSearch();
+              }}
+              className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
+            />
+            <button
+              type="button"
+              onClick={handleArticleSearch}
+              disabled={isSearchingArticle}
+              className="h-10 shrink-0 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 sm:px-4"
+            >
+              {isSearchingArticle ? '…' : 'Знайти'}
+            </button>
+          </div>
+
+          <nav className="hidden h-10 items-center gap-0.5 rounded-xl bg-gray-100 p-1 md:flex" aria-label="Розділи порталу">
+            {sectionBtn('orders', 'Замовлення')}
+            {sectionBtn('settlements', 'Звірка')}
+            {sectionBtn('profile', 'Профіль')}
+          </nav>
         </div>
 
-        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
-          <nav className="flex items-center gap-0.5 rounded-xl border border-gray-100 bg-gray-50 p-1" aria-label="Розділи порталу">
-            {headerNavBtn('orders', 'Замовлення')}
-            {headerNavBtn('settlements', 'Взаєморозрахунки')}
-            {headerNavBtn('profile', 'Профіль')}
-          </nav>
-          {uahRate ? (
-            <span className="hidden text-xs text-gray-500 lg:inline whitespace-nowrap">Курс {uahRate.toFixed(2)}</span>
-          ) : null}
-          {hasBalances ? (
-            <>
-              <Pill tone={uahTone}>Баланс UAH: <b>{Number(balances.UAH).toFixed(2)}</b></Pill>
-              <Pill tone={eurTone}>Баланс EUR: <b>{Number(balances.EUR).toFixed(2)}</b></Pill>
-            </>
-          ) : (
-            <Pill tone="gray"><span className="text-xs">Баланс ще не синхронізовано</span></Pill>
-          )}
-          <button type="button" className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
+        <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-1.5 sm:px-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
+            {hasBalances ? (
+              <>
+                <span className={moneyTone(balances.UAH)}>UAH <b>{Number(balances.UAH).toFixed(2)}</b></span>
+                <span className={moneyTone(balances.EUR)}>EUR <b>{Number(balances.EUR).toFixed(2)}</b></span>
+              </>
+            ) : (
+              <span className="text-xs text-gray-500">Баланс ще не синхронізовано</span>
+            )}
+            {uahRate ? <span className="text-gray-500">курс {Number(uahRate).toFixed(2)}</span> : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <nav className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5 md:hidden" aria-label="Розділи порталу">
+              {sectionBtn('orders', 'Замовлення', true)}
+              {sectionBtn('settlements', 'Звірка', true)}
+              {sectionBtn('profile', 'Профіль', true)}
+            </nav>
+            <button type="button" className="rounded-lg px-2 py-1 text-sm text-gray-600 hover:bg-gray-100" onClick={logout}>Вийти</button>
+          </div>
         </div>
       </header>
 
