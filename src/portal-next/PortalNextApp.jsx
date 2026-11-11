@@ -168,9 +168,6 @@ export default function PortalNextApp() {
     <div className="min-h-screen bg-stone-100 pb-24 text-stone-900 md:pb-8">
       <header className="sticky top-0 z-30 border-b border-stone-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-3">
-          <a href="https://olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="shrink-0">
-            <img src="/logo.png" alt="Olimp Auto" className="h-10" />
-          </a>
           <form
             className="flex min-w-[16rem] flex-1 items-center gap-2"
             onSubmit={(e) => { e.preventDefault(); runArticleSearch(); }}

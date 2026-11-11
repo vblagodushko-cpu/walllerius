@@ -1230,21 +1230,7 @@ function PortalApp() {
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
       <header className="bg-white border-b mb-4 p-4 flex items-center justify-between rounded-lg flex-wrap gap-3">
-        <div className="flex items-center gap-2">
-          <a href="https://olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
-            <img src="/logo.png" alt="Olimp Auto" className="h-14" />
-          </a>
-          <a
-            href="https://fuchs-eu.lubricantadvisor.com/uk"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center"
-          >
-            <img src="/oil-logo.png" alt="OIL Portal" className="h-14" />
-          </a>
-        </div>
-        
-        {/* Пошук по артикулу - між заголовком та балансом */}
+        {/* Пошук по артикулу */}
         <div className="flex items-center gap-2 flex-1 max-w-md">
           <input
             type="text"
