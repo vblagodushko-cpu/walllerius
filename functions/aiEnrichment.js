@@ -20,6 +20,7 @@ const {
   parseViscosityTags,
   viscosityGroupsFromTags,
 } = require("./shared/viscosities");
+const { matchAllowedCategories } = require("./categoryMatch");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -262,11 +263,6 @@ async function callGemini(apiKey, systemPrompt, userPrompt) {
 }
 
 function sanitizeSuggestion(raw, targetFields, allowedCategories) {
-  const allowedSet = new Set(allowedCategories.map((c) => c.toLowerCase()));
-  const categoryByLower = new Map(
-    allowedCategories.map((c) => [c.toLowerCase(), c])
-  );
-
   const suggestion = {};
   const confidence = {};
 
@@ -274,12 +270,10 @@ function sanitizeSuggestion(raw, targetFields, allowedCategories) {
     suggestion.correctName = str(raw.correctName, 500);
     confidence.correctName = clamp01(raw?.confidence?.correctName);
   }
+  let categoryMatch = { picked: [], rejected: [] };
   if (targetFields.includes("categories")) {
-    const picked = cleanList(raw.categories, 50, 120)
-      .filter((name) => allowedSet.has(name.toLowerCase()))
-      .map((name) => categoryByLower.get(name.toLowerCase()) || name)
-      .slice(0, 3);
-    suggestion.categories = picked;
+    categoryMatch = matchAllowedCategories(raw.categories, allowedCategories, 3);
+    suggestion.categories = categoryMatch.picked;
     confidence.categories = clamp01(raw?.confidence?.categories);
   }
   if (targetFields.includes("pack")) {
@@ -313,6 +307,7 @@ function sanitizeSuggestion(raw, targetFields, allowedCategories) {
     suggestion,
     confidence,
     notes: str(raw.notes, 1000),
+    categoryMatch,
   };
 }
 
@@ -351,12 +346,12 @@ function buildPrompt({
     rules: [
       "Відповідь українською.",
       "Заповнюй лише fieldsToFill.",
-      "categories — тільки з allowedCategories (1–3 шт.).",
+      "categories — 1–3 назви з allowedCategories. Якщо товар це олива, рідина, фільтр, мастило чи автохімія, категорію обов'язково обери. Порожній categories лише коли жодна назва зі списку не підходить.",
       "synonyms — альтернативні написання артикулу, не інші товари.",
       "tolerances — пиши людським текстом, але тільки реальні стандарти/допуски: ACEA, API, ILSAC, JASO, MB, VW, BMW, Renault, Ford, GM, ZF, MAN, DOT, ISO, SAE.",
       "viscosities — в'язкість у форматі SAE (5W-30, 10W-40, 75W-90) або ISO VG (ISO VG 46, ISO VG 68). Лише реальні класи.",
       "pack — об'єм у літрах, лише число без одиниць: \"0.2\", \"1\", \"4\", \"5\", \"20\". Не пиши \"200 мл\", \"4л\", \"4 л\", \"1L\". 200 мл → \"0.2\". Для штучних товарів (фільтри, свічки) — порожній рядок.",
-      "Якщо даних недостатньо — порожній рядок або [] і поясни в notes.",
+      "Якщо даних недостатньо для tolerances, viscosities, pack чи synonyms — порожній рядок або [] і поясни в notes. На categories це правило не поширюється.",
       "Не вигадуй OEM/стандарти без впевненості.",
       ...(sourceDocs.length ? ["sourceDocuments надані користувачем — використовуй їх як першоджерело."] : []),
     ],
@@ -390,6 +385,22 @@ function buildPrompt({
   }
 
   return JSON.stringify(payload, null, 2);
+}
+
+function buildCategoryRetryPrompt({ brand, id, productName, categoryNames, previous }) {
+  return JSON.stringify({
+    task: "pick_categories_only",
+    brand,
+    id,
+    currentName: productName,
+    previousCategories: previous,
+    allowedCategories: categoryNames,
+    rules: [
+      "Поверни лише JSON: { \"categories\": [\"точна назва з allowedCategories\"], \"notes\": \"\", \"confidence\": { \"categories\": 0.8 } }.",
+      "1–3 категорії. Назву бери зі списку allowedCategories.",
+      "Порожній масив лише якщо жодна категорія зі списку не описує товар.",
+    ],
+  });
 }
 
 const SYSTEM_PROMPT =
@@ -502,18 +513,70 @@ exports.suggestProductEnrichment = onCall(
     });
 
     const { parsed, tokensUsed } = await callGemini(apiKey, SYSTEM_PROMPT, userPrompt);
-    const { suggestion, confidence, notes } = sanitizeSuggestion(
-      parsed,
-      targetFields,
-      categoryNames
-    );
+    const sanitized = sanitizeSuggestion(parsed, targetFields, categoryNames);
+    let { suggestion, confidence, notes } = sanitized;
+    let categoryRejected = sanitized.categoryMatch.rejected;
+    let categoryRetried = false;
+    let tokensTotal = tokensUsed;
+
+    const categoriesRequested = targetFields.includes("categories");
+    if (categoriesRequested && !(suggestion.categories || []).length && categoryNames.length) {
+      categoryRetried = true;
+      try {
+        const retry = await callGemini(
+          apiKey,
+          SYSTEM_PROMPT,
+          buildCategoryRetryPrompt({
+            brand: productBrand,
+            id: cleanId,
+            productName: str(product.name, 500),
+            categoryNames,
+            previous: parsed?.categories ?? null,
+          })
+        );
+        tokensTotal += retry.tokensUsed;
+        const rematch = matchAllowedCategories(retry.parsed?.categories, categoryNames, 3);
+        categoryRejected = rematch.rejected;
+        if (rematch.picked.length) {
+          suggestion = { ...suggestion, categories: rematch.picked };
+          confidence = {
+            ...confidence,
+            categories: clamp01(retry.parsed?.confidence?.categories),
+          };
+          const retryNotes = str(retry.parsed?.notes, 1000);
+          notes = [notes, retryNotes].filter(Boolean).join(" ");
+        }
+      } catch (retryError) {
+        logger.warn("Category retry failed", {
+          productDocId: cleanProductDocId,
+          message: String(retryError?.message || retryError).slice(0, 200),
+        });
+      }
+    }
+
+    const categoriesAssigned = (suggestion.categories || []).length;
+    if (categoriesRequested && !categoriesAssigned) {
+      logger.warn("Product category was not assigned", {
+        uid: request.auth.uid,
+        productDocId: cleanProductDocId,
+        brand: productBrand,
+        id: cleanId,
+        raw: parsed?.categories ?? null,
+        rejected: categoryRejected,
+        retried: categoryRetried,
+      });
+    }
 
     logger.info("Product enrichment suggested", {
       uid: request.auth.uid,
       productDocId: cleanProductDocId,
       targetFields,
       sourceUrlsCount: sourceDocs.length,
-      tokensUsed,
+      tokensUsed: tokensTotal,
+      categoriesRequested,
+      categoriesAssigned,
+      categoriesRejected: categoryRejected,
+      categoryRetried,
     });
 
     return {
@@ -522,8 +585,11 @@ exports.suggestProductEnrichment = onCall(
       confidence,
       notes,
       targetFields,
+      categoryMiss: categoriesRequested && !categoriesAssigned
+        ? { rejected: categoryRejected, retried: categoryRetried }
+        : null,
       model: GEMINI_MODEL,
-      tokensUsed,
+      tokensUsed: tokensTotal,
     };
   }
 );
