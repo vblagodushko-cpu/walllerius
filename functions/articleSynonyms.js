@@ -58,6 +58,7 @@ function filterKnownSynonyms(raw, canonicalArticle, texts, maxItems = 20) {
 
 module.exports = {
   normalizeArticleCode,
+  looksLikeSpecNotArticle,
   collectAttestedArticles,
   filterKnownSynonyms,
 };
