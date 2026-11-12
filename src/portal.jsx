@@ -64,16 +64,6 @@ function clampCatalogEdgeTop(px, vh) {
   return Math.min(Math.max(px, lo), hi);
 }
 
-function FilterToggle({ checked, onChange, label }) {
-  return (
-    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-stone-700">
-      <input type="checkbox" className="peer sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span className="relative h-6 w-11 rounded-full bg-stone-300 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition peer-checked:bg-indigo-700 peer-checked:after:translate-x-5" />
-      {label}
-    </label>
-  );
-}
-
 /** Profile (with Change Password) */
 function ProfileTab({ client, user, onChangePassword, changing }) {
   const safe = client || { name: user?.displayName || user?.phoneNumber || 'Клієнт', priceType: 'роздріб' };
@@ -1309,128 +1299,201 @@ function PortalApp() {
       </header>
 
       <div className="max-w-7xl mx-auto">
-        {view === 'products' && (
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
-            <button
-              type="button"
-              className="rounded-xl bg-stone-900 px-3 py-1.5 text-sm text-white md:hidden"
-              onClick={() => setMobileSmartPanelOpen(true)}
-            >
-              Каталог
-            </button>
-            <FilterToggle
-              checked={showOnlyInStock}
-              onChange={(value) => {
-                setShowOnlyInStock(value);
-                localStorage.setItem('showOnlyInStock', String(value));
-              }}
-              label="Наявні"
-            />
-            <FilterToggle
-              checked={showOnlyPartners}
-              onChange={(value) => {
-                setShowOnlyPartners(value);
-                localStorage.setItem('showOnlyPartners', String(value));
-              }}
-              label="Партнери"
-            />
-            {categories.length > 0 && (
-              <select
-                className="rounded-xl border border-stone-200 px-2 py-1.5 text-sm"
-                value={selectedCategory || ''}
-                onChange={(e) => setSelectedCategory(e.target.value || null)}
-              >
-                <option value="">Усі категорії</option>
-                {categories.map(cat => (
-                  <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
-                ))}
-              </select>
-            )}
-            <div className="flex items-center rounded-xl bg-stone-100 p-1 text-sm">
-              {['EUR', 'UAH'].map((code) => (
+        {/* Навігація та фільтри */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 mb-5">
+          {/* Фільтри для відображення товарів - тільки для розділу "Товари" */}
+          {view === 'products' && (
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 bg-indigo-50 border border-black rounded-lg px-3 py-2 shadow-sm">
+              {/* Toggle для "Наявні" */}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <div className="relative inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyInStock}
+                    onChange={(e) => {
+                      const value = e.target.checked;
+                      setShowOnlyInStock(value);
+                      localStorage.setItem('showOnlyInStock', String(value));
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+          </div>
+                <span className="text-sm text-gray-700 whitespace-nowrap">Наявні</span>
+              </label>
+
+              {/* Toggle для "Партнери" */}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <div className="relative inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyPartners}
+                    onChange={(e) => {
+                      const value = e.target.checked;
+                      setShowOnlyPartners(value);
+                      localStorage.setItem('showOnlyPartners', String(value));
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                </div>
+                <span className="text-sm text-gray-700 whitespace-nowrap">Партнери</span>
+              </label>
+
+              {/* Вибір категорій */}
+              {categories.length > 0 && (
+                <select
+                  className="px-3 py-2 border rounded-lg text-sm"
+                  value={selectedCategory || ''}
+                  onChange={(e) => setSelectedCategory(e.target.value || null)}
+                >
+                  <option value="">Всі категорії</option>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
+                    ))}
+                  </select>
+              )}
+
+              {/* Вибір валюти - сегментовані кнопки */}
+              <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
                 <button
-                  key={code}
-                  type="button"
                   onClick={() => {
-                    setSelectedCurrency(code);
-                    localStorage.setItem('selectedCurrency', code);
+                    setSelectedCurrency('EUR');
+                    localStorage.setItem('selectedCurrency', 'EUR');
                   }}
-                  className={`rounded-lg px-3 py-1 ${
-                    selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    selectedCurrency === 'EUR'
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
-                  {code}
+                  EUR
                 </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              className="ml-auto rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
-              onClick={() => setIsCartVisible(true)}
-            >
-              Кошик{cart.length ? ` · ${cart.length}` : ''}
-            </button>
+                <button
+                  onClick={() => {
+                    setSelectedCurrency('UAH');
+                    localStorage.setItem('selectedCurrency', 'UAH');
+                  }}
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    selectedCurrency === 'UAH'
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  UAH
+                </button>
+                </div>
+
+              {/* Кнопка Кошик - тільки на мобільних всередині панелі фільтрів */}
+              <button
+                className="sm:hidden px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm whitespace-nowrap"
+                onClick={() => setIsCartVisible(true)}
+              >
+                Кошик {cart.length ? `(${cart.length})` : ''}
+              </button>
           </div>
         )}
 
+          {/* Кнопка Кошик - тільки на десктопі, окремо від фільтрів */}
+          <div className="hidden sm:block ml-auto">
+            <button className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white whitespace-nowrap" onClick={() => setIsCartVisible(true)}>
+              Кошик {cart.length ? `(${cart.length})` : ''}
+            </button>
+          </div>
+        </div>
+
         {view === 'products' && (
           <>
+            {!mobileSmartPanelOpen ? (
+              <button
+                ref={catalogEdgeFabRef}
+                type="button"
+                aria-label="Торкніться — відкрити каталог. Утримуйте ~0,5 с, потім перетягніть вгору або вниз — змінити положення кнопки"
+                className="fixed left-0 z-[45] flex md:hidden cursor-pointer touch-none select-none flex-col items-center justify-center gap-2 rounded-r-2xl border border-white/30 bg-indigo-600 py-3 pl-[max(10px,calc(env(safe-area-inset-left,0px)+8px))] pr-3 text-white shadow-[4px_2px_20px_rgba(49,46,129,0.4)] active:bg-indigo-700 min-h-[44px] min-w-[44px] -ml-1"
+                style={{
+                  top: catalogEdgeTopPx,
+                  transform: 'translateY(-50%)',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+                onPointerDown={onCatalogEdgePointerDown}
+                onPointerMove={onCatalogEdgePointerMove}
+                onPointerUp={onCatalogEdgePointerUp}
+                onPointerCancel={onCatalogEdgePointerUp}
+                onLostPointerCapture={onCatalogEdgeLostPointerCapture}
+                onClick={onCatalogEdgeClick}
+              >
+                <span className="flex flex-col gap-0.5 opacity-85" aria-hidden>
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                  <span className="h-1 w-1 rounded-full bg-white" />
+                </span>
+                <span
+                  className="max-h-[9rem] text-center text-[11px] font-semibold uppercase tracking-wide leading-tight text-white/95"
+                  style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+                >
+                  Каталог
+                </span>
+              </button>
+            ) : null}
             {mobileSmartPanelOpen ? (
               <button
                 type="button"
                 aria-label="Закрити меню каталогу"
-                className="fixed inset-0 z-30 bg-stone-900/40 md:hidden"
+                className="fixed inset-0 z-40 bg-black/40 md:hidden"
                 onClick={closeMobileSmartPanel}
               />
             ) : null}
             <div className="md:grid md:grid-cols-12 md:gap-4">
             <aside
-              className={`fixed inset-y-0 left-0 z-40 flex w-[min(90vw,20rem)] bg-stone-100 p-3 shadow-xl transition-transform duration-200 ease-out md:static md:z-auto md:col-span-3 md:block md:max-h-[calc(100vh-8rem)] md:w-auto md:translate-x-0 md:bg-transparent md:p-0 md:shadow-none ${
-                mobileSmartPanelOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+              className={`fixed inset-y-0 left-0 z-50 flex w-[min(90vw,20rem)] flex-col bg-gray-100 py-3 pl-3 pr-2 shadow-xl transition-transform duration-200 ease-out md:relative md:inset-auto md:z-auto md:col-span-3 md:w-auto md:translate-x-0 md:bg-transparent md:p-0 md:shadow-none ${
+                mobileSmartPanelOpen ? 'translate-x-0' : '-translate-x-full'
               }`}
             >
-              <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-stone-200 bg-white p-3">
-                <div className="mb-3 flex items-center justify-between gap-2 md:hidden">
-                  <span className="text-sm font-semibold text-stone-900">Каталог</span>
+              <div className="flex min-h-0 flex-1 flex-col rounded border border-gray-200 bg-white p-2 md:min-h-0 md:flex-none">
+                <div className="mb-2 flex items-center justify-between gap-2 border-b border-gray-200 pb-2 md:hidden">
+                  <span className="text-sm font-semibold text-gray-900">Вибір каталогу</span>
                   <button
                     type="button"
-                    className="rounded-lg px-2 py-1 text-lg leading-none text-stone-500 hover:bg-stone-100"
+                    className="rounded-lg px-2 py-1 text-lg leading-none text-gray-600 hover:bg-gray-100"
                     onClick={closeMobileSmartPanel}
-                    aria-label="Закрити каталог"
+                    aria-label="Закрити"
                   >
                     ×
                   </button>
                 </div>
-                <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-stone-100 p-1">
-                  <button
-                    type="button"
-                    className={`rounded-lg px-2 py-1.5 text-sm font-medium ${smartPanelMode === 'groups' ? 'bg-white text-indigo-700 shadow-sm' : 'text-stone-600'}`}
-                    onClick={() => setSmartPanelMode('groups')}
+                {/* Тумблер режимів */}
+                <div className="flex gap-1 mb-2">
+                    <button
+                    className={`flex-1 px-2 py-1.5 rounded text-sm font-medium ${smartPanelMode === 'groups' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}
+                    onClick={() => {
+                      setSmartPanelMode('groups');
+                      // Зберігаємо стан: якщо був вибраний бренд, залишаємо його вибраним
+                    }}
                   >
                     Групи
                   </button>
                   <button
-                    type="button"
-                    className={`rounded-lg px-2 py-1.5 text-sm font-medium ${smartPanelMode === 'brands' ? 'bg-white text-indigo-700 shadow-sm' : 'text-stone-600'}`}
-                    onClick={() => setSmartPanelMode('brands')}
+                    className={`flex-1 px-2 py-1.5 rounded text-sm font-medium ${smartPanelMode === 'brands' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}
+                    onClick={() => {
+                      setSmartPanelMode('brands');
+                      // Зберігаємо стан: якщо була вибрана група, залишаємо її вибраною
+                    }}
                   >
                     Бренди
                   </button>
-                </div>
+                  </div>
 
                 {smartPanelMode === 'groups' ? (
-                    <div className="min-h-0 flex-1 space-y-1 overflow-auto">
+                    <div className="max-h-[55vh] flex-1 space-y-1 overflow-auto md:max-h-none md:flex-none md:overflow-visible">
                     {sidebarProductGroups.map(group => {
                       const isExpanded = expandedGroup === group.id;
-                      const isSelected = selectedGroup === group.id
-                        || (groupType === 'preset' && group.brands?.length === 1 && selectedBrand === group.brands[0]);
+                      const isSelected = selectedGroup === group.id;
                       const groupType = group.groupType || (group.filterType === 'category' ? 'category' : 'preset');
                       
                       return (
-                        <div key={group.id} className="overflow-hidden rounded-xl border border-stone-200">
+                        <div key={group.id} className="border border-gray-200 rounded">
                           <button
-                            type="button"
-                            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium ${isSelected ? 'bg-indigo-50 text-indigo-800' : 'hover:bg-stone-50'}`}
+                            className={`w-full text-left px-2 py-1.5 flex items-center justify-between text-sm font-medium ${isSelected ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-gray-50'}`}
                             onClick={() => {
                               if (groupType === 'featured') {
                                 // Показуємо featured products (нові пропозиції)
@@ -1497,16 +1560,15 @@ function PortalApp() {
                               )}
                             </span>
                             {groupType === 'preset' && group.brands && group.brands.length > 1 && (
-                              <span className="shrink-0 text-[10px] text-stone-400">{isExpanded ? '▲' : '▼'}</span>
+                              <span className="text-[10px] text-gray-400 shrink-0">▼</span>
                             )}
                           </button>
                           {isExpanded && groupType === 'preset' && group.brands && group.brands.length > 1 && (
-                            <div className="border-t border-stone-200">
+                            <div className="border-t border-gray-200">
                               {[...(group.brands || [])].sort((a, b) => String(a).localeCompare(String(b), 'uk')).map((brandName, idx) => (
                                 <button
                                   key={idx}
-                                  type="button"
-                                  className={`block w-full px-4 py-2 text-left text-sm ${selectedBrand === brandName ? 'bg-indigo-50 font-medium text-indigo-800' : 'hover:bg-stone-50'}`}
+                                  className={`w-full text-left px-3 py-1.5 text-sm ${selectedBrand === brandName ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-gray-50'}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSelectedBrand(brandName);
@@ -1526,19 +1588,19 @@ function PortalApp() {
                       );
                     })}
                     {sidebarProductGroups.length === 0 && (
-                      <p className="px-2 py-3 text-sm text-stone-500">Групи не налаштовані</p>
+                      <div className="text-sm text-gray-500 px-2 py-1">Групи не налаштовані</div>
                     )}
                   </div>
                 ) : (
-                  <div className="flex min-h-0 flex-1 flex-col gap-2">
+                  <div className="space-y-1.5">
                     <input
-                      type="search"
-                      placeholder="Пошук бренда"
+                      type="text"
+                      placeholder="Пошук брендів..."
                       value={brandSearch}
                       onChange={(e) => setBrandSearch(e.target.value)}
-                      className="w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-indigo-400"
+                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
                     />
-                    <div className="min-h-0 flex-1 space-y-1 overflow-auto">
+                    <div className="max-h-[60vh] overflow-auto space-y-0.5">
                       {allBrands
                         .filter(b => !brandSearch.trim() || String(b.name || '').toLowerCase().includes(brandSearch.trim().toLowerCase()))
                         .map(b => {
@@ -1546,8 +1608,7 @@ function PortalApp() {
                       return (
                             <button
                               key={b.id}
-                              type="button"
-                              className={`block w-full rounded-xl px-3 py-2 text-left text-sm ${isSelected ? 'bg-indigo-50 font-medium text-indigo-800' : 'hover:bg-stone-50'}`}
+                              className={`w-full text-left px-2 py-1.5 rounded text-sm ${isSelected ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-gray-50'}`}
                               onClick={() => {
                                 setSelectedBrand(b.name);
                                 setSelectedGroup(null);
@@ -1561,8 +1622,8 @@ function PortalApp() {
                             </button>
                       );
                     })}
-                      {allBrands.filter(b => !brandSearch.trim() || String(b.name || '').toLowerCase().includes(brandSearch.trim().toLowerCase())).length === 0 && (
-                        <p className="px-2 py-3 text-sm text-stone-500">{allBrands.length === 0 ? 'Бренди не налаштовані' : 'Нічого не знайдено'}</p>
+                      {allBrands.length === 0 && (
+                        <div className="text-sm text-gray-500 px-2 py-1">Бренди не налаштовані</div>
                       )}
                   </div>
                 </div>
