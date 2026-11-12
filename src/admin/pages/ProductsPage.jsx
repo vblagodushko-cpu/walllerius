@@ -176,7 +176,6 @@ export default function ProductsPage() {
   const [featuredProductsData, setFeaturedProductsData] = useState([]); // Повні дані товарів
   const [loadingFeatured, setLoadingFeatured] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null); // {type: 'success'|'error', text: string}
-  const [regrouping, setRegrouping] = useState(false);
 
   // Модалка замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -1470,38 +1469,6 @@ export default function ProductsPage() {
 
   loadProductsByGroupRef.current = loadProductsByGroup;
 
-  const regroupCatalogFromMaster = useCallback(async () => {
-    const confirmed = window.confirm(
-      "Записати категорії з майстер-карток у каталог? Товари перейдуть у ті групи, які відповідають категоріям картки. Товари без майстер-картки не змінюються."
-    );
-    if (!confirmed) return;
-
-    setRegrouping(true);
-    setStatusMessage(null);
-    try {
-      const call = httpsCallable(functions, "regroupProductsFromMaster", { timeout: 540000 });
-      const { data } = await call({});
-      categoryGroupCacheRef.current.clear();
-      brandCacheRef.current.clear();
-      const updated = Number(data?.updated) || 0;
-      const scanned = Number(data?.scanned) || 0;
-      const unchanged = Number(data?.unchanged) || 0;
-      setStatusMessage({
-        type: "success",
-        text: `Перегруповано ${updated} товарів. Без змін: ${unchanged}. Переглянуто: ${scanned}.`,
-      });
-      if (selectedGroup) await loadProductsByGroup(selectedGroup);
-    } catch (e) {
-      console.error("regroupProductsFromMaster", e);
-      setStatusMessage({
-        type: "error",
-        text: e?.message || "Не вдалося перегрупувати товари",
-      });
-    } finally {
-      setRegrouping(false);
-    }
-  }, [loadProductsByGroup, selectedGroup]);
-
   // Функція пошуку товарів
   const handleSearch = useCallback(async () => {
     setLoading(true);
@@ -2062,19 +2029,6 @@ export default function ProductsPage() {
                 Бренди
               </button>
             </div>
-
-            {smartPanelMode === "groups" && (
-              <div className="mb-2">
-                <button
-                  type="button"
-                  disabled={regrouping}
-                  className="w-full px-2 py-1.5 rounded text-xs font-medium border border-indigo-200 text-indigo-700 bg-white hover:bg-indigo-50 disabled:opacity-50"
-                  onClick={regroupCatalogFromMaster}
-                >
-                  {regrouping ? "Перегрупування…" : "Перегрупувати за майстер-даними"}
-                </button>
-              </div>
-            )}
 
             {/* Кнопка очищення */}
             {(selectedBrand || selectedGroup) && (
