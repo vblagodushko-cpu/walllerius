@@ -13,6 +13,7 @@ import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
 import { logger } from './utils/logger.js';
+import useDebouncedValue from './admin/hooks/useDebouncedValue.js';
 import {
   isWarehouseLine,
   getCartLineStock,
@@ -24,6 +25,29 @@ import {
 } from './utils/cartStockWarning.js';
 
 const FEATURED_GROUP_ID = '__featured__';
+
+function productHaystack(product) {
+  return [
+    product?.name,
+    product?.id,
+    product?.brand,
+    product?.pack,
+    product?.viscosities,
+    product?.tolerances,
+    ...(Array.isArray(product?.viscosityTags) ? product.viscosityTags : []),
+    ...(Array.isArray(product?.toleranceTags) ? product.toleranceTags : []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function FilterToggle({ checked, onChange, label }) {
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-stone-700">
+      <input type="checkbox" className="peer sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="relative h-6 w-11 rounded-full bg-stone-300 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition peer-checked:bg-indigo-700 peer-checked:after:translate-x-5" />
+      {label}
+    </label>
+  );
+}
 
 /** Нові пропозиції: лише товари з залишком > 0 на «Мій склад». */
 function filterFeaturedWithWarehouseStock(products) {
@@ -558,7 +582,21 @@ function PortalApp() {
     return saved === 'true';
   });
   const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
+  const [listQuery, setListQuery] = useState('');
+  const debouncedListQuery = useDebouncedValue(listQuery, 400);
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
+
+  const visibleProducts = useMemo(() => {
+    const q = debouncedListQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => productHaystack(p).includes(q));
+  }, [products, debouncedListQuery]);
+
+  const visibleFeatured = useMemo(() => {
+    const q = debouncedListQuery.trim().toLowerCase();
+    if (!q) return featuredProductsData;
+    return featuredProductsData.filter((p) => productHaystack(p).includes(q));
+  }, [featuredProductsData, debouncedListQuery]);
 
   // Кеш товарів по брендах (ключ: brandName, значення: { products, lastDoc, hasMore })
   const brandCacheRef = useRef(new Map());
@@ -1299,108 +1337,69 @@ function PortalApp() {
       </header>
 
       <div className="max-w-7xl mx-auto">
-        {/* Навігація та фільтри */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 mb-5">
-          {/* Фільтри для відображення товарів - тільки для розділу "Товари" */}
-          {view === 'products' && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 bg-indigo-50 border border-black rounded-lg px-3 py-2 shadow-sm">
-              {/* Toggle для "Наявні" */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div className="relative inline-flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={showOnlyInStock}
-                    onChange={(e) => {
-                      const value = e.target.checked;
-                      setShowOnlyInStock(value);
-                      localStorage.setItem('showOnlyInStock', String(value));
-                    }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-          </div>
-                <span className="text-sm text-gray-700 whitespace-nowrap">Наявні</span>
-              </label>
-
-              {/* Toggle для "Партнери" */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div className="relative inline-flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={showOnlyPartners}
-                    onChange={(e) => {
-                      const value = e.target.checked;
-                      setShowOnlyPartners(value);
-                      localStorage.setItem('showOnlyPartners', String(value));
-                    }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                </div>
-                <span className="text-sm text-gray-700 whitespace-nowrap">Партнери</span>
-              </label>
-
-              {/* Вибір категорій */}
-              {categories.length > 0 && (
-                <select
-                  className="px-3 py-2 border rounded-lg text-sm"
-                  value={selectedCategory || ''}
-                  onChange={(e) => setSelectedCategory(e.target.value || null)}
-                >
-                  <option value="">Всі категорії</option>
-                  {categories.map(cat => (
-                    <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
-                    ))}
-                  </select>
-              )}
-
-              {/* Вибір валюти - сегментовані кнопки */}
-              <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-                <button
-                  onClick={() => {
-                    setSelectedCurrency('EUR');
-                    localStorage.setItem('selectedCurrency', 'EUR');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    selectedCurrency === 'EUR'
-                      ? 'bg-white text-indigo-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  EUR
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedCurrency('UAH');
-                    localStorage.setItem('selectedCurrency', 'UAH');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    selectedCurrency === 'UAH'
-                      ? 'bg-white text-indigo-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  UAH
-                </button>
-                </div>
-
-              {/* Кнопка Кошик - тільки на мобільних всередині панелі фільтрів */}
-              <button
-                className="sm:hidden px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm whitespace-nowrap"
-                onClick={() => setIsCartVisible(true)}
+        {view === 'products' && (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
+            <FilterToggle
+              checked={showOnlyInStock}
+              onChange={(value) => {
+                setShowOnlyInStock(value);
+                localStorage.setItem('showOnlyInStock', String(value));
+              }}
+              label="Наявні"
+            />
+            <FilterToggle
+              checked={showOnlyPartners}
+              onChange={(value) => {
+                setShowOnlyPartners(value);
+                localStorage.setItem('showOnlyPartners', String(value));
+              }}
+              label="Партнери"
+            />
+            {categories.length > 0 ? (
+              <select
+                className="rounded-xl border border-stone-200 px-2 py-1.5 text-sm"
+                value={selectedCategory || ''}
+                onChange={(e) => setSelectedCategory(e.target.value || null)}
               >
-                Кошик {cart.length ? `(${cart.length})` : ''}
-              </button>
-          </div>
-        )}
-
-          {/* Кнопка Кошик - тільки на десктопі, окремо від фільтрів */}
-          <div className="hidden sm:block ml-auto">
-            <button className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white whitespace-nowrap" onClick={() => setIsCartVisible(true)}>
-              Кошик {cart.length ? `(${cart.length})` : ''}
+                <option value="">Усі категорії</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
+                ))}
+              </select>
+            ) : null}
+            <input
+              type="search"
+              value={listQuery}
+              onChange={(e) => setListQuery(e.target.value)}
+              placeholder="Фільтр списку: назва, вʼязкість"
+              className="w-full rounded-xl border border-stone-200 px-3 py-1.5 text-sm outline-none focus:border-indigo-400 sm:w-auto sm:min-w-[12rem] sm:flex-1"
+            />
+            <div className="flex items-center rounded-xl bg-stone-100 p-1 text-sm">
+              {['EUR', 'UAH'].map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCurrency(code);
+                    localStorage.setItem('selectedCurrency', code);
+                  }}
+                  className={`rounded-lg px-3 py-1 ${
+                    selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'
+                  }`}
+                >
+                  {code}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
+              onClick={() => setIsCartVisible(true)}
+            >
+              Кошик{cart.length ? ` · ${cart.length}` : ''}
             </button>
           </div>
-        </div>
+        )}
 
         {view === 'products' && (
           <>
@@ -1643,7 +1642,7 @@ function PortalApp() {
               {showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive)) && (
                 <FeaturedProductCards
                   appId={appId}
-                  items={featuredProductsData}
+                  items={visibleFeatured}
                   client={safeClient}
                   clientPricingRules={clientPricingRules}
                   selectedCurrency={selectedCurrency}
@@ -1656,7 +1655,7 @@ function PortalApp() {
           <ProductCatalog
             appId={appId}
             clientPricingRules={clientPricingRules}
-            products={products}
+            products={visibleProducts}
             client={safeClient}
             suppliers={suppliers}
             onAddToCart={handleAddToCart}
@@ -1668,7 +1667,7 @@ function PortalApp() {
                 isArticleSearchActive={isArticleSearchActive}
                 excludeDocIds={
                   showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive))
-                    ? featuredProductsData.map((p) => p.docId).filter(Boolean)
+                    ? visibleFeatured.map((p) => p.docId).filter(Boolean)
                     : []
                 }
           />
