@@ -28,12 +28,15 @@ export function findBrandMeta(allBrands, brandName) {
   );
 }
 
+/** Скільки товарів портал читає за одну сторінку каталогу. */
+export const PRODUCT_PAGE_SIZE = 500;
+
 /** Завантаження товарів з урахуванням усіх варіантів brand (регістр/написання). */
 export async function fetchProductsByBrandNames(
   db,
   appId,
   brandNames,
-  { pageSize = 150, lastDocSnap = null, loadMore = false } = {}
+  { pageSize = PRODUCT_PAGE_SIZE, lastDocSnap = null, loadMore = false } = {}
 ) {
   const names = [...new Set((brandNames || []).map((n) => String(n || "").trim()).filter(Boolean))].slice(0, 30);
   if (!names.length) return { items: [], lastDoc: null, hasMore: false };

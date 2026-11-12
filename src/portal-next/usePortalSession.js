@@ -8,7 +8,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions } from '../firebase-config.js';
 import { logger } from '../utils/logger.js';
-import { findBrandMeta, fetchProductsByBrandNames } from '../utils/brandQuery.js';
+import { findBrandMeta, fetchProductsByBrandNames, PRODUCT_PAGE_SIZE } from '../utils/brandQuery.js';
 import {
   availableStock,
   buildStockWarningLines,
@@ -20,7 +20,6 @@ import {
 import { calculateProductPrice } from '../utils/productPricing.js';
 
 const appId = import.meta.env.VITE_PROJECT_ID;
-const PAGE_SIZE = 150;
 const ORDERS_PAGE = 15;
 export const FEATURED_GROUP_ID = '__featured__';
 
@@ -154,7 +153,7 @@ export function usePortalSession() {
         db,
         appId,
         brandMeta ? [brandMeta.name, ...(brandMeta.variants || [])] : [brandName],
-        { pageSize: PAGE_SIZE, lastDocSnap: loadMore ? lastDocRef.current : null, loadMore }
+        { pageSize: PRODUCT_PAGE_SIZE, lastDocSnap: loadMore ? lastDocRef.current : null, loadMore }
       );
       const updated = loadMore ? [...productsRef.current, ...items] : items;
       setProducts(updated);
@@ -208,12 +207,12 @@ export function usePortalSession() {
         setIsFetchingProducts(false);
         return;
       }
-      clauses.push(orderBy('brand'), orderBy('name'), limit(PAGE_SIZE));
+      clauses.push(orderBy('brand'), orderBy('name'), limit(PRODUCT_PAGE_SIZE));
       if (loadMore && lastDocRef.current) clauses.push(startAfter(lastDocRef.current));
       const snap = await getDocs(query(collection(db, `/artifacts/${appId}/public/data/products`), ...clauses));
       const items = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
       const newLastDoc = snap.docs.at(-1) || null;
-      const newHasMore = snap.size === PAGE_SIZE;
+      const newHasMore = snap.size === PRODUCT_PAGE_SIZE;
       const updated = loadMore ? [...productsRef.current, ...items] : items;
       setProducts(updated);
       setLastDocSnap(newLastDoc);

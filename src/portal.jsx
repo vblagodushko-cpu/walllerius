@@ -61,7 +61,7 @@ function filterFeaturedWithWarehouseStock(products) {
     })
     .filter(Boolean);
 }
-import { findBrandMeta, fetchProductsByBrandNames } from './utils/brandQuery.js';
+import { findBrandMeta, fetchProductsByBrandNames, PRODUCT_PAGE_SIZE } from './utils/brandQuery.js';
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -651,12 +651,11 @@ function PortalApp() {
 
     try {
       const brandMeta = findBrandMeta(allBrands, brandName);
-      const PAGE_SIZE = 150;
       const { items, lastDoc: newLastDoc, hasMore: newHasMore } = await fetchProductsByBrandNames(
         db,
         appId,
         brandMeta ? [brandMeta.name, ...(brandMeta.variants || [])] : [brandName],
-        { pageSize: PAGE_SIZE, lastDocSnap: loadMore ? lastDocSnap : null, loadMore }
+        { pageSize: PRODUCT_PAGE_SIZE, lastDocSnap: loadMore ? lastDocSnap : null, loadMore }
       );
     
       if (loadMore) {
@@ -737,7 +736,6 @@ function PortalApp() {
       }
 
     const baseCol = collection(db, `/artifacts/${appId}/public/data/products`);
-      const PAGE_SIZE = 150;
       const clauses = [];
 
       // Тільки для category-груп (preset-групи не використовують цю функцію)
@@ -763,7 +761,7 @@ function PortalApp() {
 
       clauses.push(orderBy('brand'));
       clauses.push(orderBy('name'));
-      clauses.push(limit(PAGE_SIZE));
+      clauses.push(limit(PRODUCT_PAGE_SIZE));
 
       if (loadMore && lastDocSnap) {
         clauses.push(startAfter(lastDocSnap));
@@ -774,7 +772,7 @@ function PortalApp() {
       const items = snap.docs.map(d => ({ docId: d.id, ...d.data() }));
 
       const newLastDoc = snap.docs.at(-1) || null;
-      const newHasMore = snap.size === PAGE_SIZE;
+      const newHasMore = snap.size === PRODUCT_PAGE_SIZE;
 
       if (loadMore) {
         // Додаємо до існуючих
