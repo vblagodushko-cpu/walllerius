@@ -21,6 +21,7 @@ const {
   viscosityGroupsFromTags,
 } = require("./shared/viscosities");
 const { matchAllowedCategories } = require("./categoryMatch");
+const { filterKnownSynonyms } = require("./articleSynonyms");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -262,7 +263,7 @@ async function callGemini(apiKey, systemPrompt, userPrompt) {
   };
 }
 
-function sanitizeSuggestion(raw, targetFields, allowedCategories) {
+function sanitizeSuggestion(raw, targetFields, allowedCategories, context = {}) {
   const suggestion = {};
   const confidence = {};
 
@@ -292,11 +293,12 @@ function sanitizeSuggestion(raw, targetFields, allowedCategories) {
     suggestion.viscosityGroups = viscosityGroupsFromTags(suggestion.viscosityTags);
     confidence.viscosities = clamp01(raw?.confidence?.viscosities);
   }
+  let synonymsRejected = [];
   if (targetFields.includes("synonyms")) {
-    suggestion.synonyms = cleanList(raw.synonyms, 100, 120)
-      .map(normalizeArticle)
-      .filter(Boolean);
-    confidence.synonyms = clamp01(raw?.confidence?.synonyms);
+    const filtered = filterKnownSynonyms(raw.synonyms, context.article, context.texts);
+    suggestion.synonyms = filtered.kept;
+    synonymsRejected = filtered.rejected;
+    confidence.synonyms = filtered.kept.length ? clamp01(raw?.confidence?.synonyms) : null;
   }
   if (targetFields.includes("detailBody")) {
     suggestion.detailBody = str(raw.detailBody, MAX_DETAIL_BODY);
@@ -308,6 +310,7 @@ function sanitizeSuggestion(raw, targetFields, allowedCategories) {
     confidence,
     notes: str(raw.notes, 1000),
     categoryMatch,
+    synonymsRejected,
   };
 }
 
@@ -347,7 +350,7 @@ function buildPrompt({
       "Відповідь українською.",
       "Заповнюй лише fieldsToFill.",
       "categories — 1–3 назви з allowedCategories. Якщо товар це олива, рідина, фільтр, мастило чи автохімія, категорію обов'язково обери. Порожній categories лише коли жодна назва зі списку не підходить.",
-      "synonyms — альтернативні написання артикулу, не інші товари.",
+      "synonyms — лише інше написання цього самого артикула, якщо воно дослівно є в currentName або в sourceDocuments. Якщо такого написання немає, поверни []. Не вигадуй кроси, OEM-номери, дефіси чи пробіли. Не записуй у synonyms в'язкість, допуски й об'єм.",
       "tolerances — пиши людським текстом, але тільки реальні стандарти/допуски: ACEA, API, ILSAC, JASO, MB, VW, BMW, Renault, Ford, GM, ZF, MAN, DOT, ISO, SAE.",
       "viscosities — в'язкість у форматі SAE (5W-30, 10W-40, 75W-90) або ISO VG (ISO VG 46, ISO VG 68). Лише реальні класи.",
       "pack — об'єм у літрах, лише число без одиниць: \"0.2\", \"1\", \"4\", \"5\", \"20\". Не пиши \"200 мл\", \"4л\", \"4 л\", \"1L\". 200 мл → \"0.2\". Для штучних товарів (фільтри, свічки) — порожній рядок.",
@@ -405,7 +408,8 @@ function buildCategoryRetryPrompt({ brand, id, productName, categoryNames, previ
 
 const SYSTEM_PROMPT =
   "Ти каталогіст B2B автозапчастин та автохімії в Україні. " +
-  "Повертай лише валідний JSON за responseSchema. Без markdown.";
+  "Повертай лише валідний JSON за responseSchema. Без markdown. " +
+  "Синоніми артикула не вигадуй: якщо іншого написання немає у вхідних даних, synonyms має бути порожнім масивом.";
 
 exports.suggestProductEnrichment = onCall(
   { region: REGION, cors: true },
@@ -513,8 +517,18 @@ exports.suggestProductEnrichment = onCall(
     });
 
     const { parsed, tokensUsed } = await callGemini(apiKey, SYSTEM_PROMPT, userPrompt);
-    const sanitized = sanitizeSuggestion(parsed, targetFields, categoryNames);
+    const sanitized = sanitizeSuggestion(parsed, targetFields, categoryNames, {
+      article: cleanId,
+      texts: [str(product.name, 500), ...sourceDocs.map((doc) => doc.text)],
+    });
     let { suggestion, confidence, notes } = sanitized;
+    if (
+      targetFields.includes("synonyms")
+      && !(suggestion.synonyms || []).length
+      && sanitized.synonymsRejected.length
+    ) {
+      notes = [notes, "Синоніми не додано: іншого написання артикула у назві чи джерелі немає."].filter(Boolean).join(" ");
+    }
     let categoryRejected = sanitized.categoryMatch.rejected;
     let categoryRetried = false;
     let tokensTotal = tokensUsed;
@@ -577,6 +591,8 @@ exports.suggestProductEnrichment = onCall(
       categoriesAssigned,
       categoriesRejected: categoryRejected,
       categoryRetried,
+      synonymsAssigned: (suggestion.synonyms || []).length,
+      synonymsRejected: sanitized.synonymsRejected,
     });
 
     return {
