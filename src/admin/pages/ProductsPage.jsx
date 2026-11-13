@@ -176,6 +176,13 @@ export default function ProductsPage() {
   const [featuredProductsData, setFeaturedProductsData] = useState([]); // Повні дані товарів
   const [loadingFeatured, setLoadingFeatured] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null); // {type: 'success'|'error', text: string}
+  const [catalogLayout, setCatalogLayout] = useState(() => {
+    try {
+      return localStorage.getItem("adminProductsLayout") === "tiles" ? "tiles" : "table";
+    } catch {
+      return "table";
+    }
+  });
 
   // Модалка замовлення
   const [orderModalProduct, setOrderModalProduct] = useState(null);
@@ -1598,6 +1605,7 @@ export default function ProductsPage() {
           name: product.name || "",
           categories: Array.isArray(product.categories) ? product.categories : [],
           pack: product.pack || "",
+          viscosities: product.viscosities || "",
           tolerances: product.tolerances || "",
           synonyms: Array.isArray(product.synonyms) ? product.synonyms : [],
           supplier: offer.supplier || "",
@@ -1673,6 +1681,30 @@ export default function ProductsPage() {
     
     return groups;
   }, [displayRows]);
+
+  const chooseCatalogLayout = (mode) => {
+    setCatalogLayout(mode);
+    try {
+      localStorage.setItem("adminProductsLayout", mode);
+    } catch {
+      /* режим лишається на цей сеанс */
+    }
+  };
+
+  const offerPriceText = (row) => {
+    let price;
+    if (selectedClient && clientPricingRules) {
+      price = calculatePriceWithRules(
+        { brand: row.brand, id: row.id, name: row.name },
+        { supplier: row.supplier, publicPrices: row.publicPrices }
+      );
+    } else {
+      price = getPrice(row.publicPrices, row.supplier);
+    }
+    const currencySymbol = selectedCurrency === "EUR" ? "€" : "₴";
+    if (price == null || price === "") return "—";
+    return typeof price === "number" ? `${price.toFixed(2)} ${currencySymbol}` : String(price);
+  };
 
   const tabsItems = [
     { key: "catalog", label: "Каталог" },
@@ -2368,13 +2400,125 @@ export default function ProductsPage() {
               Очистити
             </button>
 
-            <div className="ml-auto text-sm text-gray-500">
-              Показано: <b>{displayRows.length}</b> рядків
+            <div className="ml-auto flex items-center gap-2">
+              <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-50">
+                <button
+                  type="button"
+                  className={`px-3 py-1.5 rounded-md text-sm ${
+                    catalogLayout === "table" ? "bg-white text-indigo-700 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                  }`}
+                  onClick={() => chooseCatalogLayout("table")}
+                >
+                  Список
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-1.5 rounded-md text-sm ${
+                    catalogLayout === "tiles" ? "bg-white text-indigo-700 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                  }`}
+                  onClick={() => chooseCatalogLayout("tiles")}
+                >
+                  Плитка
+                </button>
+              </div>
+              <div className="text-sm text-gray-500">
+                Показано: <b>{catalogLayout === "tiles" ? groupedRows.length : displayRows.length}</b>{" "}
+                {catalogLayout === "tiles" ? "товарів" : "рядків"}
+              </div>
             </div>
           </div>
 
+          {catalogLayout === "tiles" && (
+            <div>
+              {loading && (
+                <div className="py-8 text-center text-gray-500 text-sm">Завантаження…</div>
+              )}
+              {!loading && groupedRows.length === 0 && (
+                <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-gray-300 rounded-xl">
+                  {products.length === 0
+                    ? "Натисніть «Пошук» для завантаження товарів"
+                    : "Немає даних за обраними фільтрами"}
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+                {groupedRows.map((group) => (
+                  <article key={group.key} className="flex flex-col border border-gray-200 rounded-xl bg-white p-3 shadow-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs text-gray-500">
+                          {group.product.brand} · {group.product.id}
+                        </div>
+                        <h3 className="mt-1 text-sm font-semibold text-gray-900 leading-snug break-words">
+                          {group.product.name || "—"}
+                        </h3>
+                        {(group.product.viscosities || group.product.pack) && (
+                          <div className="mt-1 text-xs text-gray-500">
+                            {[group.product.viscosities, group.product.pack].filter(Boolean).join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isFeatured(group.product.brand, group.product.id)) {
+                              handleRemoveFeatured(group.product.brand, group.product.id);
+                            } else {
+                              handleAddFeatured(group.product.brand, group.product.id);
+                            }
+                          }}
+                          className={`p-1.5 rounded text-sm transition-colors ${
+                            isFeatured(group.product.brand, group.product.id)
+                              ? "bg-yellow-100 text-yellow-700"
+                              : "bg-gray-100 text-gray-600"
+                          }`}
+                          title={isFeatured(group.product.brand, group.product.id) ? "Видалити з рекомендованих" : "Додати до рекомендованих"}
+                        >
+                          📌
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openMasterModal(group.product)}
+                          className="p-1.5 rounded text-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                          title="Редагувати master-дані"
+                        >
+                          ✏️
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {group.offers.map((row, i) => (
+                        <div key={`${row.supplier}-${i}`} className="flex items-center justify-between gap-2 border-t border-gray-100 pt-2 text-sm">
+                          <div className="min-w-0">
+                            <div className={`text-xs font-medium truncate ${row.supplier === "Мій склад" ? "text-green-600" : "text-gray-500"}`}>
+                              {row.supplier}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              Нал: <b className={row.stock > 0 ? "text-gray-800" : "text-orange-500"}>{row.stock > 0 ? row.stock : "немає"}</b>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="font-semibold">{offerPriceText(row)}</span>
+                            <button
+                              type="button"
+                              onClick={() => openOrderModal(group.product, row)}
+                              className="p-1.5 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
+                              title="Створити замовлення"
+                            >
+                              🛒
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Мобільний card-view (тільки < sm) */}
-          <div className="flex flex-col gap-2 sm:hidden">
+          <div className={`${catalogLayout === "tiles" ? "hidden" : "flex"} flex-col gap-2 sm:hidden`}>
             {loading && (
               <div className="py-8 text-center text-gray-500 text-sm">Завантаження…</div>
             )}
@@ -2462,7 +2606,7 @@ export default function ProductsPage() {
           </div>
 
           {/* Десктоп таблиця (hidden на mobile) */}
-          <div className="hidden sm:block overflow-auto border rounded-xl">
+          <div className={`${catalogLayout === "tiles" ? "hidden" : "hidden sm:block"} overflow-auto border rounded-xl`}>
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
