@@ -242,6 +242,7 @@ export default function ProductsPage() {
   const brandCacheRef = useRef(new Map());
   const categoryGroupCacheRef = useRef(new Map());
   const loadProductsByGroupRef = useRef(null);
+  const tileImageCacheRef = useRef(new Map());
   const adminSwipeRef = useRef(null);
   
   // Завантаження featured products
@@ -557,6 +558,7 @@ export default function ProductsPage() {
       };
       setProducts((prev) => prev.filter((product) => !leavesGroup(product)));
     }
+    tileImageCacheRef.current.delete(productDocId);
     categoryGroupCacheRef.current.clear();
     if (selectedGroup && loadProductsByGroupRef.current) {
       loadProductsByGroupRef.current(selectedGroup);
@@ -1691,6 +1693,42 @@ export default function ProductsPage() {
     }
   };
 
+  const [tileImages, setTileImages] = useState({});
+
+  useEffect(() => {
+    if (catalogLayout !== "tiles") return undefined;
+    const missing = groupedRows
+      .map((group) => group.product.docId)
+      .filter((docId) => docId && !tileImageCacheRef.current.has(docId));
+    if (!missing.length) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      const chunkSize = 24;
+      for (let i = 0; i < missing.length; i += chunkSize) {
+        if (cancelled) return;
+        const chunk = missing.slice(i, i + chunkSize);
+        const entries = await Promise.all(chunk.map(async (docId) => {
+          try {
+            const snap = await getDoc(doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`));
+            const data = snap.exists() ? snap.data() || {} : {};
+            return [docId, String(data.imageThumbUrl || data.imageUrl || "")];
+          } catch (e) {
+            console.warn("Не вдалося прочитати фото товару", docId, e);
+            return [docId, ""];
+          }
+        }));
+        if (cancelled) return;
+        entries.forEach(([docId, src]) => tileImageCacheRef.current.set(docId, src));
+        setTileImages(Object.fromEntries(tileImageCacheRef.current));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogLayout, groupedRows]);
+
   const offerPriceText = (row) => {
     let price;
     if (selectedClient && clientPricingRules) {
@@ -2441,8 +2479,27 @@ export default function ProductsPage() {
                 </div>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-                {groupedRows.map((group) => (
-                  <article key={group.key} className="flex flex-col border border-gray-200 rounded-xl bg-white p-3 shadow-sm">
+                {groupedRows.map((group) => {
+                  const photo = tileImages[group.product.docId] || "";
+                  const photoKnown = Object.prototype.hasOwnProperty.call(tileImages, group.product.docId);
+                  return (
+                  <article key={group.key} className="flex flex-col border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden">
+                    <div className="h-40 bg-gray-50 border-b border-gray-100 flex items-center justify-center">
+                      {photo ? (
+                        <img
+                          src={photo}
+                          alt={group.product.name || ""}
+                          loading="lazy"
+                          decoding="async"
+                          className="h-full w-full object-contain"
+                        />
+                      ) : (
+                        <span className="text-xs text-gray-400">
+                          {photoKnown ? "немає фото" : "фото…"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col flex-1 p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="text-xs text-gray-500">
@@ -2511,8 +2568,10 @@ export default function ProductsPage() {
                         </div>
                       ))}
                     </div>
+                    </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
