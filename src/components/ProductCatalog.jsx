@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase-config';
 import Tooltip from './Tooltip.jsx';
@@ -34,6 +34,15 @@ const ProductCatalog = ({
   const [detailImageUrl, setDetailImageUrl] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [catalogLayout, setCatalogLayout] = useState(() => {
+    try {
+      return localStorage.getItem('portalCatalogLayout') === 'tiles' ? 'tiles' : 'table';
+    } catch {
+      return 'table';
+    }
+  });
+  const [tileImages, setTileImages] = useState({});
+  const tileImageCacheRef = useRef(new Map());
 
   const openProductDetail = useCallback(
     async (productRow) => {
@@ -144,6 +153,8 @@ const ProductCatalog = ({
           brand: product.brand || "",
           id: product.id || "",
           name: product.name || "",
+          pack: product.pack || "",
+          viscosities: product.viscosities || "",
           supplier: offer.supplier || "",
           stock: availableStock(product, offer),
           publicPrices: offer.publicPrices || {},
@@ -174,6 +185,8 @@ const ProductCatalog = ({
             brand: row.brand,
             id: row.id,
             name: row.name,
+            pack: row.pack,
+            viscosities: row.viscosities,
           },
           offers: [row],
         };
@@ -188,6 +201,58 @@ const ProductCatalog = ({
     
     return groups;
   }, [displayRows]);
+
+  const chooseCatalogLayout = (mode) => {
+    setCatalogLayout(mode);
+    try {
+      localStorage.setItem('portalCatalogLayout', mode);
+    } catch {
+      /* режим лишається на цей сеанс */
+    }
+  };
+
+  useEffect(() => {
+    if (catalogLayout !== 'tiles') return undefined;
+    const missing = groupedRows
+      .map((group) => group.product.docId)
+      .filter((docId) => docId && !tileImageCacheRef.current.has(docId));
+    if (!missing.length || !appId) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      const chunkSize = 24;
+      for (let i = 0; i < missing.length; i += chunkSize) {
+        if (cancelled) return;
+        const chunk = missing.slice(i, i + chunkSize);
+        const entries = await Promise.all(chunk.map(async (docId) => {
+          try {
+            const snap = await getDoc(doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`));
+            const data = snap.exists() ? snap.data() || {} : {};
+            return [docId, String(data.imageThumbUrl || data.imageUrl || '')];
+          } catch (e) {
+            console.warn('Не вдалося прочитати фото товару', docId, e);
+            return [docId, ''];
+          }
+        }));
+        if (cancelled) return;
+        entries.forEach(([docId, src]) => tileImageCacheRef.current.set(docId, src));
+        setTileImages(Object.fromEntries(tileImageCacheRef.current));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogLayout, groupedRows, appId]);
+
+  const priceTextFor = (row) => {
+    const price = calculatePrice(
+      { brand: row.brand, id: row.id },
+      { supplier: row.supplier, publicPrices: row.publicPrices }
+    );
+    const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
+    return price > 0 ? `${price.toFixed(2)} ${currencySymbol}` : '—';
+  };
 
   const infoButtonClass =
     'flex-shrink-0 p-1 rounded text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors';
@@ -211,8 +276,146 @@ const ProductCatalog = ({
         />
       )}
       <div className="bg-white p-6 rounded-lg shadow-md">
+        <div className="mb-3 flex justify-end">
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            <button
+              type="button"
+              className={`rounded-md px-3 py-1.5 text-sm ${
+                catalogLayout === 'table' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+              }`}
+              onClick={() => chooseCatalogLayout('table')}
+            >
+              Список
+            </button>
+            <button
+              type="button"
+              className={`rounded-md px-3 py-1.5 text-sm ${
+                catalogLayout === 'tiles' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+              }`}
+              onClick={() => chooseCatalogLayout('tiles')}
+            >
+              Плитка
+            </button>
+          </div>
+        </div>
+
+        {catalogLayout === 'tiles' && (
+          <div>
+            {groupedRows.length === 0 ? (
+              <div className="px-3 py-4 text-center text-gray-500 text-sm border border-dashed border-gray-300 rounded-lg">
+                Немає товарів для відображення, виберіть потрібну групу товарів
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {groupedRows.map((group) => {
+                  const photo = tileImages[group.product.docId] || '';
+                  const photoKnown = Object.prototype.hasOwnProperty.call(tileImages, group.product.docId);
+                  return (
+                    <article key={group.key} className="flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="flex h-40 items-center justify-center border-b border-gray-100 bg-gray-50">
+                        {photo ? (
+                          <img
+                            src={photo}
+                            alt={group.product.name || ''}
+                            loading="lazy"
+                            decoding="async"
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <span className="text-xs text-gray-400">
+                            {photoKnown ? 'немає фото' : 'фото…'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-1 flex-col p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-xs text-gray-500">
+                              {group.product.brand} · {group.product.id}
+                            </div>
+                            <h3 className="mt-1 break-words text-sm font-semibold leading-snug text-gray-900">
+                              {group.product.name || 'Без назви'}
+                            </h3>
+                            {(group.product.viscosities || group.product.pack) && (
+                              <div className="mt-1 text-xs text-gray-500">
+                                {[group.product.viscosities, group.product.pack].filter(Boolean).join(' · ')}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-shrink-0 gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openGoogleSearch(group.product.name, group.product.id)}
+                              className="rounded p-1.5 text-gray-400 hover:text-indigo-600"
+                              title="Пошук в Google"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openProductDetail(group.product)}
+                              className={infoButtonClass}
+                              title="Детальний опис"
+                            >
+                              <InfoIcon />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-2">
+                          {group.offers.map((row, i) => {
+                            const stock = Number(row.stock) || 0;
+                            const stockText = stock > 20 ? '20+' : stock;
+                            return (
+                              <div key={`${row.supplier}-${i}`} className="flex items-center justify-between gap-2 border-t border-gray-100 pt-2 text-sm">
+                                <div className="min-w-0">
+                                  <div className={`truncate text-xs font-medium ${row.supplier === 'Мій склад' ? 'text-green-600' : 'text-indigo-600'}`}>
+                                    {row.supplier === 'Мій склад' ? 'Склад' : 'Партнер'}
+                                  </div>
+                                  <div className="text-xs text-gray-500">
+                                    Наявність: <b className={stock > 0 ? 'text-gray-800' : 'text-orange-500'}>{stock > 0 ? stockText : 'немає'}</b>
+                                  </div>
+                                </div>
+                                <div className="flex flex-shrink-0 items-center gap-2">
+                                  <span className="font-semibold">{priceTextFor(row)}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedProduct({
+                                      docId: row.docId,
+                                      brand: row.brand,
+                                      id: row.id,
+                                      name: row.name,
+                                      selectedOffer: {
+                                        supplier: row.supplier,
+                                        stock: row.stock,
+                                        publicPrices: row.publicPrices,
+                                      },
+                                      selectedSupplier: row.supplier,
+                                    })}
+                                    className="rounded bg-indigo-50 p-1.5 text-indigo-700 transition-colors hover:bg-indigo-100"
+                                    title="Додати в кошик"
+                                  >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Мобільний вигляд: картки, акцент на назві та ціні */}
-        <div className="flex flex-col gap-3 sm:hidden">
+        <div className={`${catalogLayout === 'tiles' ? 'hidden' : 'flex'} flex-col gap-3 sm:hidden`}>
           {displayRows.map((row, idx) => {
             const productForPrice = { brand: row.brand, id: row.id };
             const offerForPrice = { supplier: row.supplier, publicPrices: row.publicPrices };
@@ -328,7 +531,7 @@ const ProductCatalog = ({
         </div>
 
         {/* Десктопний вигляд: таблиця без змін */}
-        <div className="hidden sm:block">
+        <div className={catalogLayout === 'tiles' ? 'hidden' : 'hidden sm:block'}>
           <table className="min-w-full divide-y divide-gray-200 border border-gray-300 text-sm" style={{ tableLayout: 'fixed', width: '100%' }}>
             <thead className="bg-gray-50 sticky top-0 z-20">
               <tr>
