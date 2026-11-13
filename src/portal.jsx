@@ -9,6 +9,7 @@ import { httpsCallable } from 'firebase/functions';
 import './index.css';
 import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
+import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
@@ -1336,6 +1337,8 @@ function PortalApp() {
 
       <div className="max-w-7xl mx-auto">
         {view === 'products' && (
+          <>
+          <PortalNewsNotice />
           <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
             <FilterToggle
               checked={showOnlyInStock}
@@ -1365,12 +1368,10 @@ function PortalApp() {
                 ))}
               </select>
             ) : null}
-            <input
-              type="search"
+            <PortalListFilter
               value={listQuery}
-              onChange={(e) => setListQuery(e.target.value)}
-              placeholder="Фільтр списку: назва, вʼязкість"
-              className="w-full rounded-xl border border-stone-200 px-3 py-1.5 text-sm outline-none focus:border-indigo-400 sm:w-auto sm:min-w-[12rem] sm:flex-1"
+              onChange={setListQuery}
+              className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
             />
             <div className="flex items-center rounded-xl bg-stone-100 p-1 text-sm">
               {['EUR', 'UAH'].map((code) => (
@@ -1397,6 +1398,7 @@ function PortalApp() {
               Кошик{cart.length ? ` · ${cart.length}` : ''}
             </button>
           </div>
+          </>
         )}
 
         {view === 'products' && (

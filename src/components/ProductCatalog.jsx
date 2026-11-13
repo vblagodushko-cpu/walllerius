@@ -10,6 +10,7 @@ import {
 import { availableStock } from '../utils/cartStockWarning.js';
 import AddToCartModal from './AddToCartModal.jsx';
 import ProductDetailModal from './ProductDetailModal.jsx';
+import { markTilesNewsUsed, tilesNewsAlreadyUsed } from './PortalNewsNotice.jsx';
 
 const MAX_DETAIL_BODY_CHARS = 80000;
 
@@ -42,6 +43,7 @@ const ProductCatalog = ({
     }
   });
   const [tileImages, setTileImages] = useState({});
+  const [showTilesNew, setShowTilesNew] = useState(() => !tilesNewsAlreadyUsed());
   const tileImageCacheRef = useRef(new Map());
 
   const openProductDetail = useCallback(
@@ -204,6 +206,10 @@ const ProductCatalog = ({
 
   const chooseCatalogLayout = (mode) => {
     setCatalogLayout(mode);
+    if (mode === 'tiles') {
+      markTilesNewsUsed();
+      setShowTilesNew(false);
+    }
     try {
       localStorage.setItem('portalCatalogLayout', mode);
     } catch {
@@ -277,7 +283,12 @@ const ProductCatalog = ({
       )}
       <div className="bg-white p-6 rounded-lg shadow-md">
         <div className="mb-3 flex justify-end">
-          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+          <div className="relative inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            {showTilesNew ? (
+              <span className="pointer-events-none absolute -top-2 right-1 z-10 rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-white">
+                нове
+              </span>
+            ) : null}
             <button
               type="button"
               className={`rounded-md px-3 py-1.5 text-sm ${

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import ProductCatalog from '../components/ProductCatalog.jsx';
+import PortalNewsNotice, { PortalListFilter } from '../components/PortalNewsNotice.jsx';
 import FeaturedProductCards from '../components/FeaturedProductCards.jsx';
 import OrderHistory from '../OrderHistory.jsx';
 import SettlementsPage from '../SettlementsPage.jsx';
@@ -245,6 +246,7 @@ export default function PortalNextApp() {
 
         {view === 'products' ? (
           <>
+            <PortalNewsNotice />
             <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
               <button type="button" className="rounded-xl bg-stone-900 px-3 py-1.5 text-sm text-white md:hidden" onClick={() => setCatalogOpen(true)}>Каталог</button>
               <Toggle checked={session.showOnlyInStock} onChange={session.setShowOnlyInStock} label="Наявні" />
@@ -261,12 +263,10 @@ export default function PortalNextApp() {
                   ))}
                 </select>
               ) : null}
-              <input
-                type="search"
+              <PortalListFilter
                 value={listQuery}
-                onChange={(e) => setListQuery(e.target.value)}
-                placeholder="Фільтр списку: назва, вʼязкість"
-                className="w-full rounded-xl border border-stone-200 px-3 py-1.5 text-sm outline-none focus:border-indigo-400 sm:w-auto sm:min-w-[12rem] sm:flex-1"
+                onChange={setListQuery}
+                className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
               />
             </div>
             <div className="md:grid md:grid-cols-12 md:gap-4">
