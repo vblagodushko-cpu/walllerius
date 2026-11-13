@@ -9,10 +9,12 @@ import { httpsCallable } from 'firebase/functions';
 import './index.css';
 import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
+import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
 import { logger } from './utils/logger.js';
+import useDebouncedValue from './admin/hooks/useDebouncedValue.js';
 import {
   isWarehouseLine,
   getCartLineStock,
@@ -24,6 +26,29 @@ import {
 } from './utils/cartStockWarning.js';
 
 const FEATURED_GROUP_ID = '__featured__';
+
+function productHaystack(product) {
+  return [
+    product?.name,
+    product?.id,
+    product?.brand,
+    product?.pack,
+    product?.viscosities,
+    product?.tolerances,
+    ...(Array.isArray(product?.viscosityTags) ? product.viscosityTags : []),
+    ...(Array.isArray(product?.toleranceTags) ? product.toleranceTags : []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function FilterToggle({ checked, onChange, label }) {
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-stone-700">
+      <input type="checkbox" className="peer sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="relative h-6 w-11 rounded-full bg-stone-300 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition peer-checked:bg-indigo-700 peer-checked:after:translate-x-5" />
+      {label}
+    </label>
+  );
+}
 
 /** Нові пропозиції: лише товари з залишком > 0 на «Мій склад». */
 function filterFeaturedWithWarehouseStock(products) {
@@ -37,7 +62,7 @@ function filterFeaturedWithWarehouseStock(products) {
     })
     .filter(Boolean);
 }
-import { findBrandMeta, fetchProductsByBrandNames } from './utils/brandQuery.js';
+import { findBrandMeta, fetchProductsByBrandNames, PRODUCT_PAGE_SIZE } from './utils/brandQuery.js';
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -62,17 +87,6 @@ function clampCatalogEdgeTop(px, vh) {
   const lo = half;
   const hi = Math.max(lo + 1, vh - half);
   return Math.min(Math.max(px, lo), hi);
-}
-
-/** UI helper */
-function Pill({ children, tone='gray' }) {
-  const tones = {
-    gray: 'bg-gray-100 text-gray-800',
-    green: 'bg-green-100 text-green-800',
-    red: 'bg-red-100 text-red-800',
-    indigo: 'bg-indigo-100 text-indigo-800',
-  };
-  return <span className={`px-3 py-1 rounded-xl text-sm ${tones[tone] || tones.gray}`}>{children}</span>;
 }
 
 /** Profile (with Change Password) */
@@ -569,7 +583,21 @@ function PortalApp() {
     return saved === 'true';
   });
   const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
+  const [listQuery, setListQuery] = useState('');
+  const debouncedListQuery = useDebouncedValue(listQuery, 400);
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
+
+  const visibleProducts = useMemo(() => {
+    const q = debouncedListQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => productHaystack(p).includes(q));
+  }, [products, debouncedListQuery]);
+
+  const visibleFeatured = useMemo(() => {
+    const q = debouncedListQuery.trim().toLowerCase();
+    if (!q) return featuredProductsData;
+    return featuredProductsData.filter((p) => productHaystack(p).includes(q));
+  }, [featuredProductsData, debouncedListQuery]);
 
   // Кеш товарів по брендах (ключ: brandName, значення: { products, lastDoc, hasMore })
   const brandCacheRef = useRef(new Map());
@@ -624,12 +652,11 @@ function PortalApp() {
 
     try {
       const brandMeta = findBrandMeta(allBrands, brandName);
-      const PAGE_SIZE = 150;
       const { items, lastDoc: newLastDoc, hasMore: newHasMore } = await fetchProductsByBrandNames(
         db,
         appId,
         brandMeta ? [brandMeta.name, ...(brandMeta.variants || [])] : [brandName],
-        { pageSize: PAGE_SIZE, lastDocSnap: loadMore ? lastDocSnap : null, loadMore }
+        { pageSize: PRODUCT_PAGE_SIZE, lastDocSnap: loadMore ? lastDocSnap : null, loadMore }
       );
     
       if (loadMore) {
@@ -710,7 +737,6 @@ function PortalApp() {
       }
 
     const baseCol = collection(db, `/artifacts/${appId}/public/data/products`);
-      const PAGE_SIZE = 150;
       const clauses = [];
 
       // Тільки для category-груп (preset-групи не використовують цю функцію)
@@ -736,7 +762,7 @@ function PortalApp() {
 
       clauses.push(orderBy('brand'));
       clauses.push(orderBy('name'));
-      clauses.push(limit(PAGE_SIZE));
+      clauses.push(limit(PRODUCT_PAGE_SIZE));
 
       if (loadMore && lastDocSnap) {
         clauses.push(startAfter(lastDocSnap));
@@ -747,7 +773,7 @@ function PortalApp() {
       const items = snap.docs.map(d => ({ docId: d.id, ...d.data() }));
 
       const newLastDoc = snap.docs.at(-1) || null;
-      const newHasMore = snap.size === PAGE_SIZE;
+      const newHasMore = snap.size === PRODUCT_PAGE_SIZE;
 
       if (loadMore) {
         // Додаємо до існуючих
@@ -1224,178 +1250,156 @@ function PortalApp() {
     };
   }, []);
 
-  const uahTone = balances.UAH >= 0 ? 'green' : 'red';
-  const eurTone = balances.EUR >= 0 ? 'green' : 'red';
+  const moneyTone = (value) => (Number(value) >= 0 ? 'text-emerald-700' : 'text-red-700');
+
+  const sectionBtn = (id, label, compact = false) => (
+    <button
+      type="button"
+      className={`${compact ? 'px-2 py-1 text-xs' : 'h-8 px-3 text-sm'} rounded-lg font-medium whitespace-nowrap ${
+        view === id ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+      }`}
+      onClick={() => setView(id)}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
-      <header className="bg-white border-b mb-4 p-4 flex items-center justify-between rounded-lg flex-wrap gap-3">
-        <div className="flex items-center gap-2">
-          <a href="https://olimp-auto.biz" target="_blank" rel="noopener noreferrer" className="flex items-center">
-            <img src="/logo.png" alt="Olimp Auto" className="h-14" />
-          </a>
-          <a
-            href="https://fuchs-eu.lubricantadvisor.com/uk"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center"
-          >
-            <img src="/oil-logo.png" alt="OIL Portal" className="h-14" />
-          </a>
-        </div>
-        
-        {/* Пошук по артикулу - між заголовком та балансом */}
-        <div className="flex items-center gap-2 flex-1 max-w-md">
-          <input
-            type="text"
-            placeholder="Пошук по артикулу (напр. KL 200, 12345)"
-            value={articleSearch}
-            onChange={(e) => setArticleSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleArticleSearch();
-            }}
-            className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-          />
+      <header className="mb-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <div className="flex items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4">
           <button
-            onClick={handleArticleSearch}
-            disabled={isSearchingArticle}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm whitespace-nowrap"
+            type="button"
+            onClick={() => setView('products')}
+            className={`flex h-10 shrink-0 items-center gap-2 rounded-xl px-3 text-sm font-semibold ${
+              view === 'products'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
+            }`}
           >
-            {isSearchingArticle ? 'Пошук...' : 'Знайти'}
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+            <span className="hidden sm:inline">Каталог продукції</span>
+            <span className="sm:hidden">Каталог</span>
           </button>
-        </div>
-        
-        {/* Курс євро */}
-        {uahRate && (
-          <div className="text-xs text-gray-600 whitespace-nowrap">
-            Курс {uahRate.toFixed(2)}
+
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <input
+              type="text"
+              placeholder="Артикул, напр. KL 200"
+              value={articleSearch}
+              onChange={(e) => setArticleSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleArticleSearch();
+              }}
+              className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
+            />
+            <button
+              type="button"
+              onClick={handleArticleSearch}
+              disabled={isSearchingArticle}
+              className="h-10 shrink-0 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 sm:px-4"
+            >
+              {isSearchingArticle ? '…' : 'Знайти'}
+            </button>
           </div>
-        )}
-        
-        <div className="flex items-center gap-2">
-          {hasBalances ? (
-            <>
-          <Pill tone={uahTone}>Баланс UAH: <b>{Number(balances.UAH).toFixed(2)}</b></Pill>
-          <Pill tone={eurTone}>Баланс EUR: <b>{Number(balances.EUR).toFixed(2)}</b></Pill>
-            </>
-          ) : (
-            <Pill tone="gray"><span className="text-xs">Баланс ще не синхронізовано</span></Pill>
-          )}
-          <button className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm" onClick={logout}>Вийти</button>
+
+          <nav className="hidden h-10 items-center gap-0.5 rounded-xl bg-gray-100 p-1 md:flex" aria-label="Розділи порталу">
+            {sectionBtn('orders', 'Замовлення')}
+            {sectionBtn('settlements', 'Звірка')}
+            {sectionBtn('profile', 'Профіль')}
+          </nav>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-1.5 sm:px-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
+            {hasBalances ? (
+              <>
+                <span className={moneyTone(balances.UAH)}>UAH <b>{Number(balances.UAH).toFixed(2)}</b></span>
+                <span className={moneyTone(balances.EUR)}>EUR <b>{Number(balances.EUR).toFixed(2)}</b></span>
+              </>
+            ) : (
+              <span className="text-xs text-gray-500">Баланс ще не синхронізовано</span>
+            )}
+            {uahRate ? <span className="text-gray-500">курс {Number(uahRate).toFixed(2)}</span> : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <nav className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5 md:hidden" aria-label="Розділи порталу">
+              {sectionBtn('orders', 'Замовлення', true)}
+              {sectionBtn('settlements', 'Звірка', true)}
+              {sectionBtn('profile', 'Профіль', true)}
+            </nav>
+            <button type="button" className="rounded-lg px-2 py-1 text-sm text-gray-600 hover:bg-gray-100" onClick={logout}>Вийти</button>
+          </div>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto">
-        {/* Навігація та фільтри */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 mb-5">
-          {/* Навігація - горизонтальний скрол на мобільних */}
-          <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'products' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('products')}>Товари</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'orders' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('orders')}>Замовлення</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'settlements' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('settlements')}>Взаєморозрахунки</button>
-            <button className={`px-4 py-2 rounded-xl text-sm whitespace-nowrap ${view === 'profile' ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200'}`} onClick={() => setView('profile')}>Профіль</button>
-          </div>
-
-          {/* Фільтри для відображення товарів - тільки для розділу "Товари" */}
-          {view === 'products' && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 bg-indigo-50 border border-black rounded-lg px-3 py-2 shadow-sm">
-              {/* Toggle для "Наявні" */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div className="relative inline-flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={showOnlyInStock}
-                    onChange={(e) => {
-                      const value = e.target.checked;
-                      setShowOnlyInStock(value);
-                      localStorage.setItem('showOnlyInStock', String(value));
-                    }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-          </div>
-                <span className="text-sm text-gray-700 whitespace-nowrap">Наявні</span>
-              </label>
-
-              {/* Toggle для "Партнери" */}
-              <label className="flex items-center gap-2 cursor-pointer">
-                <div className="relative inline-flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={showOnlyPartners}
-                    onChange={(e) => {
-                      const value = e.target.checked;
-                      setShowOnlyPartners(value);
-                      localStorage.setItem('showOnlyPartners', String(value));
-                    }}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                </div>
-                <span className="text-sm text-gray-700 whitespace-nowrap">Партнери</span>
-              </label>
-
-              {/* Вибір категорій */}
-              {categories.length > 0 && (
-                <select
-                  className="px-3 py-2 border rounded-lg text-sm"
-                  value={selectedCategory || ''}
-                  onChange={(e) => setSelectedCategory(e.target.value || null)}
-                >
-                  <option value="">Всі категорії</option>
-                  {categories.map(cat => (
-                    <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
-                    ))}
-                  </select>
-              )}
-
-              {/* Вибір валюти - сегментовані кнопки */}
-              <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-                <button
-                  onClick={() => {
-                    setSelectedCurrency('EUR');
-                    localStorage.setItem('selectedCurrency', 'EUR');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    selectedCurrency === 'EUR'
-                      ? 'bg-white text-indigo-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  EUR
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedCurrency('UAH');
-                    localStorage.setItem('selectedCurrency', 'UAH');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    selectedCurrency === 'UAH'
-                      ? 'bg-white text-indigo-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  UAH
-                </button>
-                </div>
-
-              {/* Кнопка Кошик - тільки на мобільних всередині панелі фільтрів */}
-              <button
-                className="sm:hidden px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm whitespace-nowrap"
-                onClick={() => setIsCartVisible(true)}
+        {view === 'products' && (
+          <>
+          <PortalNewsNotice />
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
+            <FilterToggle
+              checked={showOnlyInStock}
+              onChange={(value) => {
+                setShowOnlyInStock(value);
+                localStorage.setItem('showOnlyInStock', String(value));
+              }}
+              label="Наявні"
+            />
+            <FilterToggle
+              checked={showOnlyPartners}
+              onChange={(value) => {
+                setShowOnlyPartners(value);
+                localStorage.setItem('showOnlyPartners', String(value));
+              }}
+              label="Партнери"
+            />
+            {categories.length > 0 ? (
+              <select
+                className="rounded-xl border border-stone-200 px-2 py-1.5 text-sm"
+                value={selectedCategory || ''}
+                onChange={(e) => setSelectedCategory(e.target.value || null)}
               >
-                Кошик {cart.length ? `(${cart.length})` : ''}
-              </button>
-          </div>
-        )}
-
-          {/* Кнопка Кошик - тільки на десктопі, окремо від фільтрів */}
-          <div className="hidden sm:block ml-auto">
-            <button className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white whitespace-nowrap" onClick={() => setIsCartVisible(true)}>
-              Кошик {cart.length ? `(${cart.length})` : ''}
+                <option value="">Усі категорії</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.name || cat.id}>{cat.name || cat.id}</option>
+                ))}
+              </select>
+            ) : null}
+            <PortalListFilter
+              value={listQuery}
+              onChange={setListQuery}
+              className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
+            />
+            <div className="flex items-center rounded-xl bg-stone-100 p-1 text-sm">
+              {['EUR', 'UAH'].map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCurrency(code);
+                    localStorage.setItem('selectedCurrency', code);
+                  }}
+                  className={`rounded-lg px-3 py-1 ${
+                    selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'
+                  }`}
+                >
+                  {code}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
+              onClick={() => setIsCartVisible(true)}
+            >
+              Кошик{cart.length ? ` · ${cart.length}` : ''}
             </button>
           </div>
-        </div>
+          </>
+        )}
 
         {view === 'products' && (
           <>
@@ -1638,7 +1642,7 @@ function PortalApp() {
               {showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive)) && (
                 <FeaturedProductCards
                   appId={appId}
-                  items={featuredProductsData}
+                  items={visibleFeatured}
                   client={safeClient}
                   clientPricingRules={clientPricingRules}
                   selectedCurrency={selectedCurrency}
@@ -1651,7 +1655,7 @@ function PortalApp() {
           <ProductCatalog
             appId={appId}
             clientPricingRules={clientPricingRules}
-            products={products}
+            products={visibleProducts}
             client={safeClient}
             suppliers={suppliers}
             onAddToCart={handleAddToCart}
@@ -1663,7 +1667,7 @@ function PortalApp() {
                 isArticleSearchActive={isArticleSearchActive}
                 excludeDocIds={
                   showFeatured && (selectedGroup === FEATURED_GROUP_ID || (!selectedBrand && !selectedGroup && !selectedCategory && !isArticleSearchActive))
-                    ? featuredProductsData.map((p) => p.docId).filter(Boolean)
+                    ? visibleFeatured.map((p) => p.docId).filter(Boolean)
                     : []
                 }
           />
