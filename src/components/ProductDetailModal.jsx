@@ -5,8 +5,7 @@ export default function ProductDetailModal({ product, body, imageUrl, loading, e
   const hasMeta = Boolean(
     String(product?.pack || "").trim() ||
     String(product?.tolerances || "").trim() ||
-    String(product?.viscosities || "").trim() ||
-    (Array.isArray(product?.viscosityTags) && product.viscosityTags.length)
+    String(product?.viscosities || "").trim()
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   if (!product) return null;
@@ -32,8 +31,7 @@ export default function ProductDetailModal({ product, body, imageUrl, loading, e
           </div>
           <div className="p-4 overflow-y-auto flex-1 min-h-0">
             {loading && <p className="text-gray-500 text-sm">Завантаження...</p>}
-            {error && <p className="text-red-600 text-sm">{error}</p>}
-            {!loading && !error && (
+            {!loading && (
               <>
                 {hasMeta && (
                   <div className="mb-4 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs space-y-1.5">
@@ -55,20 +53,9 @@ export default function ProductDetailModal({ product, body, imageUrl, loading, e
                         <span className="text-slate-800">{product.viscosities}</span>
                       </div>
                     ) : null}
-                    {Array.isArray(product?.viscosityTags) && product.viscosityTags.length ? (
-                      <div className="flex gap-2 flex-wrap pt-0.5">
-                        {product.viscosityTags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-teal-50 border border-teal-100 px-2 py-0.5 text-teal-700 text-[11px] font-medium"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
                 )}
+                {error ? <p className="text-red-600 text-sm mb-3">{error}</p> : null}
                 {imageUrl ? (
                   <button
                     type="button"
