@@ -68,6 +68,11 @@ export default function FeaturedProductCards({
         brand: product.brand,
         id: product.id,
         name: product.name,
+        pack: product.pack || "",
+        viscosities: product.viscosities || "",
+        viscosityTags: Array.isArray(product.viscosityTags) ? product.viscosityTags : [],
+        tolerances: product.tolerances || "",
+        toleranceTags: Array.isArray(product.toleranceTags) ? product.toleranceTags : [],
       });
       setDetailBody('');
       setDetailImageUrl('');
