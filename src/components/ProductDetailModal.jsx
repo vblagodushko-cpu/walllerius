@@ -6,7 +6,6 @@ export default function ProductDetailModal({ product, body, imageUrl, loading, e
     String(product?.pack || "").trim() ||
     String(product?.tolerances || "").trim() ||
     String(product?.viscosities || "").trim() ||
-    (Array.isArray(product?.toleranceTags) && product.toleranceTags.length) ||
     (Array.isArray(product?.viscosityTags) && product.viscosityTags.length)
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -54,18 +53,6 @@ export default function ProductDetailModal({ product, body, imageUrl, loading, e
                       <div className="flex gap-2">
                         <span className="shrink-0 text-slate-500 w-20">В'язкість</span>
                         <span className="text-slate-800">{product.viscosities}</span>
-                      </div>
-                    ) : null}
-                    {Array.isArray(product?.toleranceTags) && product.toleranceTags.length ? (
-                      <div className="flex gap-2 flex-wrap pt-0.5">
-                        {product.toleranceTags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-indigo-700 text-[11px] font-medium"
-                          >
-                            {tag}
-                          </span>
-                        ))}
                       </div>
                     ) : null}
                     {Array.isArray(product?.viscosityTags) && product.viscosityTags.length ? (
