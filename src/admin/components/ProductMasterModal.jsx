@@ -3,8 +3,8 @@ import { collection, doc, getDoc, getDocs, setDoc, serverTimestamp, deleteField 
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import {
-  uploadProductImages,
   deleteProductImagesAtPaths,
+  replaceProductImages,
 } from "../../utils/productImageStorage";
 import {
   validateProductImageFile,
@@ -460,11 +460,13 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
             imageThumbStoragePath: deleteField(),
           };
         } else if (pendingImageFile) {
-          const uploaded = await uploadProductImages(appId, product.docId, pendingImageFile);
-          if (detailImageStoragePath || detailImageThumbStoragePath) {
-            await deleteProductImagesAtPaths(detailImageStoragePath, detailImageThumbStoragePath);
-          }
-          imagePayload = uploaded;
+          imagePayload = await replaceProductImages(
+            appId,
+            product.docId,
+            pendingImageFile,
+            detailImageStoragePath,
+            detailImageThumbStoragePath
+          );
         }
       } catch (imageErr) {
         console.error("Помилка завантаження фото", imageErr);
@@ -594,7 +596,18 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
                           ? masterForm.synonymsText
                           : masterForm[field] ?? "";
                   const proposedText = Array.isArray(proposed) ? proposed.join(", ") : String(proposed ?? "");
-                  if (!proposedText.trim()) return null;
+                  if (!proposedText.trim()) {
+                    if (field !== "categories") return null;
+                    const rejected = Array.isArray(aiSuggestion.categoryMiss?.rejected)
+                      ? aiSuggestion.categoryMiss.rejected.filter(Boolean)
+                      : [];
+                    return (
+                      <div key={field} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Категорію не призначено.
+                        {rejected.length ? ` Модель написала: ${rejected.join(", ")} — цього немає в довіднику.` : " Модель не обрала жодної категорії з довідника."}
+                      </div>
+                    );
+                  }
                   const confidence = aiSuggestion.confidence?.[field];
                   return (
                     <label key={field} className="flex gap-3 rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs">

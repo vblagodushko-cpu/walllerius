@@ -251,6 +251,7 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
     defaultProductMasterDocId,
     getProductMasterData,
     normalizePack,
+    syncCatalogCategoriesForMaster,
   } = require("./shared");
   const {
     parseToleranceTags,
@@ -370,12 +371,21 @@ exports.updateProductMasterData = onCall({ region: REGION, cors: true }, async (
 
   clearMasterDataCache();
 
+  const catalogSync = await syncCatalogCategoriesForMaster({
+    brand: productBrand,
+    article: product.id || cleanId,
+    synonyms: safeSynonyms,
+    categories: safeCategories,
+  });
+
   logger.info("Product master data updated", {
     uid: request.auth.uid,
     productDocId: cleanProductDocId,
     masterDocId,
     categoriesCount: safeCategories.length,
     synonymsCount: safeSynonyms.length,
+    catalogScanned: catalogSync.scanned,
+    catalogUpdated: catalogSync.updated,
   });
 
   return {

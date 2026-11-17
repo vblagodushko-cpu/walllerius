@@ -37,6 +37,21 @@ export async function uploadProductImages(appId, productDocId, file) {
   };
 }
 
+/**
+ * Нове фото завжди лежить у main.webp / thumb.webp цього товару.
+ * Старі шляхи треба стирати лише якщо вони інші: інакше щойно завантажений файл видаляється одразу після запису.
+ */
+export async function replaceProductImages(appId, productDocId, file, oldMainPath, oldThumbPath) {
+  const uploaded = await uploadProductImages(appId, productDocId, file);
+  const keep = new Set([uploaded.imageStoragePath, uploaded.imageThumbStoragePath]);
+  const staleMain = oldMainPath && !keep.has(oldMainPath) ? oldMainPath : "";
+  const staleThumb = oldThumbPath && !keep.has(oldThumbPath) ? oldThumbPath : "";
+  if (staleMain || staleThumb) {
+    await deleteProductImagesAtPaths(staleMain, staleThumb);
+  }
+  return uploaded;
+}
+
 export async function deleteProductImagesAtPaths(pathMain, pathThumb) {
   const tasks = [];
   if (pathMain) {

@@ -5,6 +5,7 @@ import { offerSourceLabel, WAREHOUSE_SUPPLIER, availableStock } from '../utils/c
 import { calculateProductPrice } from '../utils/productPricing.js';
 import AddToCartModal from './AddToCartModal.jsx';
 import ProductDetailModal from './ProductDetailModal.jsx';
+import { lookupProductMaster } from '../utils/productMasterLookup.js';
 
 const MAX_DETAIL_BODY_CHARS = 80000;
 
@@ -68,27 +69,52 @@ export default function FeaturedProductCards({
         brand: product.brand,
         id: product.id,
         name: product.name,
+        pack: product.pack || "",
+        viscosities: product.viscosities || "",
+        viscosityTags: Array.isArray(product.viscosityTags) ? product.viscosityTags : [],
+        tolerances: product.tolerances || "",
+        toleranceTags: Array.isArray(product.toleranceTags) ? product.toleranceTags : [],
       });
       setDetailBody('');
       setDetailImageUrl('');
       setDetailError('');
       setDetailLoading(true);
-      try {
-        const ref = doc(
-          db,
-          `/artifacts/${appId}/public/data/products/${product.docId}/details/main`
-        );
-        const snap = await getDoc(ref);
+      const detailRef = doc(
+        db,
+        `/artifacts/${appId}/public/data/products/${product.docId}/details/main`
+      );
+      const [detailResult, masterResult] = await Promise.allSettled([
+        getDoc(detailRef),
+        lookupProductMaster(appId, product.brand, product.id),
+      ]);
+      if (detailResult.status === 'fulfilled') {
+        const snap = detailResult.value;
         const d = snap.exists() ? snap.data() || {} : {};
         const raw = String(d.body ?? '');
         setDetailBody(raw.length > MAX_DETAIL_BODY_CHARS ? raw.slice(0, MAX_DETAIL_BODY_CHARS) : raw);
         setDetailImageUrl(String(d.imageUrl || d.imageThumbUrl || product.imageUrl || product.imageThumbUrl || ''));
-      } catch (e) {
-        console.error('Featured product detail load', e);
-        setDetailError(e?.message || 'Не вдалося завантажити опис');
-      } finally {
-        setDetailLoading(false);
+      } else {
+        console.error('Featured product detail load', detailResult.reason);
+        setDetailError(detailResult.reason?.message || 'Не вдалося завантажити опис');
       }
+      const master = masterResult.status === 'fulfilled' ? masterResult.value : null;
+      if (masterResult.status === 'rejected') console.warn('Master tolerances', masterResult.reason);
+      let tolerances = String(product.tolerances || '').trim();
+      let pack = product.pack || '';
+      let viscosities = product.viscosities || '';
+      if (master) {
+        if (String(master.tolerances || '').trim()) tolerances = String(master.tolerances).trim();
+        if (!String(pack).trim() && master.pack != null && String(master.pack).trim()) pack = master.pack;
+        if (!String(viscosities).trim() && String(master.viscosities || '').trim()) {
+          viscosities = String(master.viscosities).trim();
+        }
+      }
+      setDetailModal((prev) => (
+        prev && prev.docId === product.docId
+          ? { ...prev, tolerances, pack, viscosities }
+          : prev
+      ));
+      setDetailLoading(false);
     },
     [appId]
   );
