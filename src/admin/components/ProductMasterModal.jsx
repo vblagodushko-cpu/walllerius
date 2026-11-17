@@ -3,8 +3,8 @@ import { collection, doc, getDoc, getDocs, setDoc, serverTimestamp, deleteField 
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import {
-  uploadProductImages,
   deleteProductImagesAtPaths,
+  replaceProductImages,
 } from "../../utils/productImageStorage";
 import {
   validateProductImageFile,
@@ -460,11 +460,13 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
             imageThumbStoragePath: deleteField(),
           };
         } else if (pendingImageFile) {
-          const uploaded = await uploadProductImages(appId, product.docId, pendingImageFile);
-          if (detailImageStoragePath || detailImageThumbStoragePath) {
-            await deleteProductImagesAtPaths(detailImageStoragePath, detailImageThumbStoragePath);
-          }
-          imagePayload = uploaded;
+          imagePayload = await replaceProductImages(
+            appId,
+            product.docId,
+            pendingImageFile,
+            detailImageStoragePath,
+            detailImageThumbStoragePath
+          );
         }
       } catch (imageErr) {
         console.error("Помилка завантаження фото", imageErr);

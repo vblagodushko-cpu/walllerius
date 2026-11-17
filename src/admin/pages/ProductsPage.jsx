@@ -14,8 +14,8 @@ import {
   deleteField,
 } from "firebase/firestore";
 import {
-  uploadProductImages,
   deleteProductImagesAtPaths,
+  replaceProductImages,
 } from "../../utils/productImageStorage";
 import {
   validateProductImageFile,
@@ -1009,18 +1009,13 @@ export default function ProductsPage() {
             imageThumbStoragePath: deleteField(),
           };
         } else if (pendingImageFile) {
-          const uploaded = await uploadProductImages(
+          imagePayload = await replaceProductImages(
             appId,
             masterModalProduct.docId,
-            pendingImageFile
+            pendingImageFile,
+            detailImageStoragePath,
+            detailImageThumbStoragePath
           );
-          if (detailImageStoragePath || detailImageThumbStoragePath) {
-            await deleteProductImagesAtPaths(
-              detailImageStoragePath,
-              detailImageThumbStoragePath
-            );
-          }
-          imagePayload = uploaded;
         }
       } catch (imageErr) {
         console.error("Помилка завантаження фото", imageErr);
@@ -2492,6 +2487,10 @@ export default function ProductsPage() {
                           loading="lazy"
                           decoding="async"
                           className="h-full w-full object-contain"
+                          onError={() => {
+                            tileImageCacheRef.current.set(group.product.docId, "");
+                            setTileImages(Object.fromEntries(tileImageCacheRef.current));
+                          }}
                         />
                       ) : (
                         <span className="text-xs text-gray-400">
