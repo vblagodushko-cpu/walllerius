@@ -21,11 +21,13 @@ import {
   validateProductImageFile,
   coerceProductImageFile,
   getImageFileFromClipboard,
+  tilePhotoFromDetails,
 } from "../../utils/productImage";
 import { httpsCallable } from "firebase/functions";
 import { fetchProductsByBrandNames } from "../../utils/brandQuery.js";
 import { db, functions } from "../../firebase-config";
 import Tabs from "../components/Tabs.jsx";
+import CatalogTilePhoto from "../../components/CatalogTilePhoto.jsx";
 import ProductMasterModal from "../components/ProductMasterModal.jsx";
 import { useClientSearch } from "../hooks/useClientSearch.js";
 import {
@@ -243,6 +245,7 @@ export default function ProductsPage() {
   const categoryGroupCacheRef = useRef(new Map());
   const loadProductsByGroupRef = useRef(null);
   const tileImageCacheRef = useRef(new Map());
+  const [tileImages, setTileImages] = useState({});
   const adminSwipeRef = useRef(null);
   
   // Завантаження featured products
@@ -541,7 +544,7 @@ export default function ProductsPage() {
     setMasterModalProduct(product);
   }, []);
 
-  const handleMasterSaved = useCallback((productDocId, productPatch) => {
+  const handleMasterSaved = useCallback((productDocId, productPatch, savedImage) => {
     applyProductPatch(productDocId, productPatch);
     const group = productGroups.find((item) => item.id === selectedGroup);
     const groupType = group
@@ -558,7 +561,14 @@ export default function ProductsPage() {
       };
       setProducts((prev) => prev.filter((product) => !leavesGroup(product)));
     }
-    tileImageCacheRef.current.delete(productDocId);
+    if (savedImage?.removed) {
+      tileImageCacheRef.current.set(productDocId, { src: "", fallback: "" });
+    } else if (savedImage?.imageUrl || savedImage?.imageThumbUrl) {
+      tileImageCacheRef.current.set(productDocId, tilePhotoFromDetails(savedImage));
+    } else {
+      tileImageCacheRef.current.delete(productDocId);
+    }
+    setTileImages(Object.fromEntries(tileImageCacheRef.current));
     categoryGroupCacheRef.current.clear();
     if (selectedGroup && loadProductsByGroupRef.current) {
       loadProductsByGroupRef.current(selectedGroup);
@@ -1688,8 +1698,6 @@ export default function ProductsPage() {
     }
   };
 
-  const [tileImages, setTileImages] = useState({});
-
   useEffect(() => {
     if (catalogLayout !== "tiles") return undefined;
     const missing = groupedRows
@@ -1707,14 +1715,14 @@ export default function ProductsPage() {
           try {
             const snap = await getDoc(doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`));
             const data = snap.exists() ? snap.data() || {} : {};
-            return [docId, String(data.imageThumbUrl || data.imageUrl || "")];
+            return [docId, tilePhotoFromDetails(data)];
           } catch (e) {
             console.warn("Не вдалося прочитати фото товару", docId, e);
-            return [docId, ""];
+            return [docId, { src: "", fallback: "" }];
           }
         }));
         if (cancelled) return;
-        entries.forEach(([docId, src]) => tileImageCacheRef.current.set(docId, src));
+        entries.forEach(([docId, photo]) => tileImageCacheRef.current.set(docId, photo));
         setTileImages(Object.fromEntries(tileImageCacheRef.current));
       }
     })();
@@ -2475,26 +2483,20 @@ export default function ProductsPage() {
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
                 {groupedRows.map((group) => {
-                  const photo = tileImages[group.product.docId] || "";
-                  const photoKnown = Object.prototype.hasOwnProperty.call(tileImages, group.product.docId);
+                  const photo = tileImages[group.product.docId];
+                  const photoKnown = photo != null;
                   return (
                   <article key={group.key} className="flex flex-col border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden">
-                    <div className="h-40 bg-gray-50 border-b border-gray-100 flex items-center justify-center">
-                      {photo ? (
-                        <img
-                          src={photo}
+                    <div className="relative h-40 bg-gray-50 border-b border-gray-100">
+                      {photoKnown ? (
+                        <CatalogTilePhoto
+                          src={photo.src}
+                          fallbackSrc={photo.fallback}
                           alt={group.product.name || ""}
-                          loading="lazy"
-                          decoding="async"
-                          className="h-full w-full object-contain"
-                          onError={() => {
-                            tileImageCacheRef.current.set(group.product.docId, "");
-                            setTileImages(Object.fromEntries(tileImageCacheRef.current));
-                          }}
                         />
                       ) : (
-                        <span className="text-xs text-gray-400">
-                          {photoKnown ? "немає фото" : "фото…"}
+                        <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-400">
+                          фото…
                         </span>
                       )}
                     </div>

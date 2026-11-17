@@ -12,6 +12,8 @@ import AddToCartModal from './AddToCartModal.jsx';
 import ProductDetailModal from './ProductDetailModal.jsx';
 import { markTilesNewsUsed, tilesNewsAlreadyUsed } from './PortalNewsNotice.jsx';
 import { lookupProductMaster } from '../utils/productMasterLookup.js';
+import { tilePhotoFromDetails } from '../utils/productImage.js';
+import CatalogTilePhoto from './CatalogTilePhoto.jsx';
 
 const MAX_DETAIL_BODY_CHARS = 80000;
 
@@ -261,14 +263,14 @@ const ProductCatalog = ({
           try {
             const snap = await getDoc(doc(db, `/artifacts/${appId}/public/data/products/${docId}/details/main`));
             const data = snap.exists() ? snap.data() || {} : {};
-            return [docId, String(data.imageThumbUrl || data.imageUrl || '')];
+            return [docId, tilePhotoFromDetails(data)];
           } catch (e) {
             console.warn('Не вдалося прочитати фото товару', docId, e);
-            return [docId, ''];
+            return [docId, { src: '', fallback: '' }];
           }
         }));
         if (cancelled) return;
-        entries.forEach(([docId, src]) => tileImageCacheRef.current.set(docId, src));
+        entries.forEach(([docId, photo]) => tileImageCacheRef.current.set(docId, photo));
         setTileImages(Object.fromEntries(tileImageCacheRef.current));
       }
     })();
@@ -346,22 +348,20 @@ const ProductCatalog = ({
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                 {groupedRows.map((group) => {
-                  const photo = tileImages[group.product.docId] || '';
-                  const photoKnown = Object.prototype.hasOwnProperty.call(tileImages, group.product.docId);
+                  const photo = tileImages[group.product.docId];
+                  const photoKnown = photo != null;
                   return (
                     <article key={group.key} className="flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-                      <div className="flex h-40 items-center justify-center border-b border-gray-100 bg-gray-50">
-                        {photo ? (
-                          <img
-                            src={photo}
+                      <div className="relative h-40 border-b border-gray-100 bg-gray-50">
+                        {photoKnown ? (
+                          <CatalogTilePhoto
+                            src={photo.src}
+                            fallbackSrc={photo.fallback}
                             alt={group.product.name || ''}
-                            loading="lazy"
-                            decoding="async"
-                            className="h-full w-full object-contain"
                           />
                         ) : (
-                          <span className="text-xs text-gray-400">
-                            {photoKnown ? 'немає фото' : 'фото…'}
+                          <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-400">
+                            фото…
                           </span>
                         )}
                       </div>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase-config';
 import { offerSourceLabel, WAREHOUSE_SUPPLIER, availableStock } from '../utils/cartStockWarning.js';
@@ -21,7 +21,11 @@ function InfoIcon() {
 }
 
 function ProductImage({ imageThumbUrl, imageUrl, alt, articleId }) {
-  const src = imageThumbUrl || imageUrl;
+  const primary = imageThumbUrl || imageUrl || '';
+  const [src, setSrc] = useState(primary);
+  useEffect(() => {
+    setSrc(primary);
+  }, [primary, imageUrl]);
   if (src) {
     return (
       <img
@@ -29,7 +33,11 @@ function ProductImage({ imageThumbUrl, imageUrl, alt, articleId }) {
         alt={alt || ''}
         loading="lazy"
         decoding="async"
-        className="w-full h-full object-contain"
+        className="absolute inset-0 h-full w-full object-contain"
+        onError={() => {
+          if (imageUrl && src !== imageUrl) setSrc(imageUrl);
+          else setSrc('');
+        }}
       />
     );
   }
@@ -195,7 +203,7 @@ export default function FeaturedProductCards({
         }}
         title="Детальний опис"
       >
-        <div className="h-[92px] sm:h-[100px] bg-gray-50 border-b border-gray-100 flex items-center justify-center pointer-events-none">
+        <div className="relative h-[92px] sm:h-[100px] bg-gray-50 border-b border-gray-100 pointer-events-none">
           <ProductImage
             imageThumbUrl={product.imageThumbUrl}
             imageUrl={product.imageUrl}
