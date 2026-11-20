@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import ProductCatalog from '../components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from '../components/PortalNewsNotice.jsx';
+import PackSizeFilter from '../components/PackSizeFilter.jsx';
+import { packMatchesBucket } from '../utils/packFilter.js';
 import FeaturedProductCards from '../components/FeaturedProductCards.jsx';
 import OrderHistory from '../OrderHistory.jsx';
 import SettlementsPage from '../SettlementsPage.jsx';
@@ -76,6 +78,7 @@ export default function PortalNextApp() {
   const [ledgerCurrency, setLedgerCurrency] = useState(null);
   const [ledgerNonce, setLedgerNonce] = useState(0);
   const [listQuery, setListQuery] = useState('');
+  const [packBucket, setPackBucket] = useState('');
   const [repeating, setRepeating] = useState(false);
   const debouncedListQuery = useDebouncedValue(listQuery, 400);
 
@@ -92,15 +95,19 @@ export default function PortalNextApp() {
 
   const visibleProducts = useMemo(() => {
     const q = debouncedListQuery.trim().toLowerCase();
-    if (!q) return session.products;
-    return session.products.filter((p) => productHaystack(p).includes(q));
-  }, [session.products, debouncedListQuery]);
+    return session.products.filter((p) => {
+      if (q && !productHaystack(p).includes(q)) return false;
+      return packMatchesBucket(p?.pack, packBucket);
+    });
+  }, [session.products, debouncedListQuery, packBucket]);
 
   const visibleFeatured = useMemo(() => {
     const q = debouncedListQuery.trim().toLowerCase();
-    if (!q) return session.featuredProductsData;
-    return session.featuredProductsData.filter((p) => productHaystack(p).includes(q));
-  }, [session.featuredProductsData, debouncedListQuery]);
+    return session.featuredProductsData.filter((p) => {
+      if (q && !productHaystack(p).includes(q)) return false;
+      return packMatchesBucket(p?.pack, packBucket);
+    });
+  }, [session.featuredProductsData, debouncedListQuery, packBucket]);
 
   const showFeaturedBlock = session.showFeatured && (
     session.selectedGroup === FEATURED_GROUP_ID
@@ -268,6 +275,7 @@ export default function PortalNextApp() {
                 onChange={setListQuery}
                 className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
               />
+              <PackSizeFilter value={packBucket} onChange={setPackBucket} />
             </div>
             <div className="md:grid md:grid-cols-12 md:gap-4">
               <aside className={`fixed inset-y-0 left-0 z-40 flex w-[min(90vw,20rem)] bg-stone-100 p-3 shadow-xl transition-transform md:static md:z-auto md:col-span-3 md:block md:max-h-[calc(100vh-8rem)] md:w-auto md:translate-x-0 md:bg-transparent md:p-0 md:shadow-none ${catalogOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>

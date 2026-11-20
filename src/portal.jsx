@@ -10,6 +10,8 @@ import './index.css';
 import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
+import PackSizeFilter from './components/PackSizeFilter.jsx';
+import { packMatchesBucket } from './utils/packFilter.js';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
@@ -584,20 +586,25 @@ function PortalApp() {
   });
   const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
   const [listQuery, setListQuery] = useState('');
+  const [packBucket, setPackBucket] = useState('');
   const debouncedListQuery = useDebouncedValue(listQuery, 400);
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
 
-  const visibleProducts = useMemo(() => {
+  const matchesListFilters = useCallback((product) => {
     const q = debouncedListQuery.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter((p) => productHaystack(p).includes(q));
-  }, [products, debouncedListQuery]);
+    if (q && !productHaystack(product).includes(q)) return false;
+    return packMatchesBucket(product?.pack, packBucket);
+  }, [debouncedListQuery, packBucket]);
 
-  const visibleFeatured = useMemo(() => {
-    const q = debouncedListQuery.trim().toLowerCase();
-    if (!q) return featuredProductsData;
-    return featuredProductsData.filter((p) => productHaystack(p).includes(q));
-  }, [featuredProductsData, debouncedListQuery]);
+  const visibleProducts = useMemo(
+    () => products.filter(matchesListFilters),
+    [products, matchesListFilters]
+  );
+
+  const visibleFeatured = useMemo(
+    () => featuredProductsData.filter(matchesListFilters),
+    [featuredProductsData, matchesListFilters]
+  );
 
   // Кеш товарів по брендах (ключ: brandName, значення: { products, lastDoc, hasMore })
   const brandCacheRef = useRef(new Map());
@@ -1264,6 +1271,36 @@ function PortalApp() {
     </button>
   );
 
+  const logoutBtn = (compact = false) => (
+    <button
+      type="button"
+      className={`${compact ? 'px-2 py-1 text-xs' : 'h-8 px-3 text-sm'} shrink-0 whitespace-nowrap rounded-lg border border-rose-200 bg-white font-medium text-rose-700 hover:bg-rose-50`}
+      onClick={logout}
+    >
+      Вийти
+    </button>
+  );
+
+  const currencySwitch = (
+    <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-sm" role="group" aria-label="Валюта">
+      {['EUR', 'UAH'].map((code) => (
+        <button
+          key={code}
+          type="button"
+          onClick={() => {
+            setSelectedCurrency(code);
+            localStorage.setItem('selectedCurrency', code);
+          }}
+          className={`rounded-md px-2.5 py-1 ${
+            selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-gray-600'
+          }`}
+        >
+          {code}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
       <header className="mb-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
@@ -1305,11 +1342,14 @@ function PortalApp() {
             </button>
           </div>
 
-          <nav className="hidden h-10 items-center gap-0.5 rounded-xl bg-gray-100 p-1 md:flex" aria-label="Розділи порталу">
-            {sectionBtn('orders', 'Замовлення')}
-            {sectionBtn('settlements', 'Звірка')}
-            {sectionBtn('profile', 'Профіль')}
-          </nav>
+          <div className="hidden shrink-0 items-center gap-2 md:flex">
+            <nav className="flex h-10 items-center gap-0.5 rounded-xl bg-gray-100 p-1" aria-label="Розділи порталу">
+              {sectionBtn('orders', 'Замовлення')}
+              {sectionBtn('settlements', 'Звірка')}
+              {sectionBtn('profile', 'Профіль')}
+            </nav>
+            {logoutBtn(false)}
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-1.5 sm:px-4">
@@ -1330,7 +1370,8 @@ function PortalApp() {
               {sectionBtn('settlements', 'Звірка', true)}
               {sectionBtn('profile', 'Профіль', true)}
             </nav>
-            <button type="button" className="rounded-lg px-2 py-1 text-sm text-gray-600 hover:bg-gray-100" onClick={logout}>Вийти</button>
+            <span className="md:hidden">{logoutBtn(true)}</span>
+            {currencySwitch}
           </div>
         </div>
       </header>
@@ -1373,23 +1414,7 @@ function PortalApp() {
               onChange={setListQuery}
               className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
             />
-            <div className="flex items-center rounded-xl bg-stone-100 p-1 text-sm">
-              {['EUR', 'UAH'].map((code) => (
-                <button
-                  key={code}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCurrency(code);
-                    localStorage.setItem('selectedCurrency', code);
-                  }}
-                  className={`rounded-lg px-3 py-1 ${
-                    selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'
-                  }`}
-                >
-                  {code}
-                </button>
-              ))}
-            </div>
+            <PackSizeFilter value={packBucket} onChange={setPackBucket} />
             <button
               type="button"
               className="rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
