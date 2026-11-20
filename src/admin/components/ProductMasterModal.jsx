@@ -450,6 +450,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
       const bodyTrim =
         detailBody.length > MAX_PRODUCT_DETAIL_BODY ? detailBody.slice(0, MAX_PRODUCT_DETAIL_BODY) : detailBody;
       let imagePayload = {};
+      let savedImage = null;
       try {
         if (removeDetailImage && (detailImageStoragePath || detailImageThumbStoragePath)) {
           await deleteProductImagesAtPaths(detailImageStoragePath, detailImageThumbStoragePath);
@@ -459,6 +460,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
             imageStoragePath: deleteField(),
             imageThumbStoragePath: deleteField(),
           };
+          savedImage = { removed: true };
         } else if (pendingImageFile) {
           imagePayload = await replaceProductImages(
             appId,
@@ -467,6 +469,10 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
             detailImageStoragePath,
             detailImageThumbStoragePath
           );
+          savedImage = {
+            imageUrl: imagePayload.imageUrl,
+            imageThumbUrl: imagePayload.imageThumbUrl,
+          };
         }
       } catch (imageErr) {
         console.error("Помилка завантаження фото", imageErr);
@@ -485,7 +491,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
         return;
       }
       notify("success", "Master-дані та опис товару збережено");
-      onSaved?.(product.docId, productPatch);
+      onSaved?.(product.docId, productPatch, savedImage);
       onClose?.();
     } catch (e) {
       console.error("Помилка збереження master-даних", e);
@@ -778,7 +784,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
                 )}
                 <input
                   type="file"
-                  accept="image/jpeg,image/png,image/webp"
+                  accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
                   onChange={(e) => {
                     applyDetailImageFile(e.target.files?.[0]);
                     e.target.value = "";
