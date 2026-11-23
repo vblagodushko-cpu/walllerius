@@ -283,6 +283,20 @@ function defaultProductMasterDocId(displayBrand, articleNorm) {
   return `${b}__${articleNorm}`;
 }
 
+async function listProductMasterCards() {
+  await loadAllCaches();
+  const seen = new Set();
+  const cards = [];
+  for (const row of productMasterDataCache.values()) {
+    if (!row || row._isSynonym) continue;
+    const docId = row._masterFirestoreId;
+    if (!docId || seen.has(docId)) continue;
+    seen.add(docId);
+    cards.push(stripMasterCacheInternalFields(row));
+  }
+  return cards;
+}
+
 /**
  * Знайти канонічний артикул для будь-якого артикулу (по всіх брендах)
  * Повертає { canonicalArticle, foundViaSynonym } або null
@@ -584,6 +598,7 @@ module.exports = {
   defaultProductMasterDocId,
   findCanonicalArticleByAnyFormat,
   clearMasterDataCache,
+  listProductMasterCards,
   categoryListKey,
   syncCatalogCategoriesForMaster,
   _getProductMasterDataCache: () => productMasterDataCache,

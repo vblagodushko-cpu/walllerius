@@ -2,8 +2,8 @@
 const { onCall } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
-const { normalizeArticle, APP_ID } = require("./shared");
-const { compactArticle } = require("./articleKey");
+const { normalizeArticle, APP_ID, listProductMasterCards } = require("./shared");
+const { compactArticle, suggestMasterCards } = require("./articleKey");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -127,5 +127,19 @@ exports.searchProductsByArticle = onCall(
       canonicalArticle: products[0]?.id || normalizedArticle,
       count: products.length,
     };
+  }
+);
+
+exports.suggestMasterProducts = onCall(
+  { region: REGION, cors: true },
+  async (request) => {
+    const { HttpsError } = require("firebase-functions/v2/https");
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Потрібна авторизація.");
+    }
+    const q = String(request.data?.q || "").slice(0, 80);
+    if (q.trim().length < 2) return { ok: true, items: [] };
+    const cards = await listProductMasterCards();
+    return { ok: true, items: suggestMasterCards(cards, q, 8) };
   }
 );

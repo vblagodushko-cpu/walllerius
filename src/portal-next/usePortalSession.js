@@ -495,8 +495,8 @@ export function usePortalSession() {
     loadProductsByBrand(brandName, false);
   }, [loadProductsByBrand]);
 
-  const searchArticle = useCallback(async () => {
-    const article = articleSearch.trim();
+  const searchArticle = useCallback(async (explicitArticle) => {
+    const article = String(explicitArticle ?? articleSearch).trim();
     if (!article) return { ok: false };
     setIsSearchingArticle(true);
     try {

@@ -10,6 +10,7 @@ import SettlementsPage from '../SettlementsPage.jsx';
 import useDebouncedValue from '../admin/hooks/useDebouncedValue.js';
 import { FEATURED_GROUP_ID, usePortalSession } from './usePortalSession.js';
 import CatalogSidebar from './CatalogSidebar.jsx';
+import MasterSearchBox from './MasterSearchBox.jsx';
 import CartSheet from './CartSheet.jsx';
 import ProfilePanel from './ProfilePanel.jsx';
 
@@ -143,13 +144,18 @@ export default function PortalNextApp() {
     }
   };
 
-  const runArticleSearch = async () => {
+  const runArticleSearch = async (article) => {
     setView('products');
     setCatalogOpen(false);
-    const result = await session.searchArticle();
+    const result = await session.searchArticle(article);
     if (result?.error) setNotice({ tone: 'err', text: result.error });
     else if (result && result.ok === false) setNotice({ tone: 'err', text: 'За цим артикулом нічого не знайдено.' });
     else setNotice(null);
+  };
+
+  const pickMasterProduct = (item) => {
+    session.setArticleSearch(item.id);
+    runArticleSearch(item.id);
   };
 
   if (session.booting) {
@@ -162,26 +168,15 @@ export default function PortalNextApp() {
     <div className="min-h-screen bg-stone-100 pb-24 text-stone-900 md:pb-8">
       <header className="sticky top-0 z-30 border-b border-stone-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-3">
-          <form
-            className="flex min-w-[16rem] flex-1 items-center gap-2"
-            onSubmit={(e) => { e.preventDefault(); runArticleSearch(); }}
-          >
-            <input
-              type="search"
-              value={session.articleSearch}
-              onChange={(e) => session.setArticleSearch(e.target.value)}
-              placeholder="Артикул, напр. KL 200"
-              className="w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-            />
-            <button type="submit" disabled={session.isSearchingArticle} className="rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:opacity-50">
-              {session.isSearchingArticle ? '…' : 'Знайти'}
-            </button>
-            {session.articleSearch || session.isArticleSearchActive ? (
-              <button type="button" className="rounded-xl px-2 py-2 text-sm text-stone-600 hover:bg-stone-100" onClick={() => { session.clearArticleSearch(); setNotice(null); }}>
-                Скинути
-              </button>
-            ) : null}
-          </form>
+          <MasterSearchBox
+            value={session.articleSearch}
+            onChange={session.setArticleSearch}
+            onSearch={() => runArticleSearch()}
+            onPick={pickMasterProduct}
+            searching={session.isSearchingArticle}
+            showReset={Boolean(session.articleSearch || session.isArticleSearchActive)}
+            onReset={() => { session.clearArticleSearch(); setNotice(null); }}
+          />
           <div className="relative">
             <button type="button" className="rounded-xl bg-stone-100 px-3 py-2 text-sm hover:bg-stone-200" onClick={() => setMenuOpen((v) => !v)}>
               {session.client?.name || 'Профіль'}
