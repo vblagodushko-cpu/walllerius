@@ -213,7 +213,15 @@ export default function PortalNextApp() {
           <BalanceChip code="UAH" amount={session.balances.UAH} known={session.hasBalances} onOpen={() => openLedger('UAH')} />
           <BalanceChip code="EUR" amount={session.balances.EUR} known={session.hasBalances} onOpen={() => openLedger('EUR')} />
           {session.uahRate ? <span className="text-xs text-stone-500">Курс {Number(session.uahRate).toFixed(2)}</span> : null}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <a
+              href="https://olimp-auto.biz/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+            >
+              Сайт запчастин
+            </a>
             <a
               href="https://www.fuchs.com/ua/uk/pidbir-olivi/"
               target="_blank"
@@ -222,21 +230,23 @@ export default function PortalNextApp() {
             >
               Підбір оливи
             </a>
-            <div className="flex rounded-xl bg-stone-100 p-1 text-sm">
-              {['EUR', 'UAH'].map((code) => (
-                <button
-                  key={code}
-                  type="button"
-                  onClick={() => session.setSelectedCurrency(code)}
-                  className={`rounded-lg px-3 py-1 ${session.selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'}`}
-                >
-                  {code}
-                </button>
-              ))}
+            <div className="flex items-center gap-2">
+              <div className="flex rounded-xl bg-stone-100 p-1 text-sm">
+                {['EUR', 'UAH'].map((code) => (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => session.setSelectedCurrency(code)}
+                    className={`rounded-lg px-3 py-1 ${session.selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'}`}
+                  >
+                    {code}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="whitespace-nowrap rounded-lg bg-indigo-700 px-2.5 py-1 text-sm font-medium text-white hover:bg-indigo-800" onClick={() => setCartOpen(true)}>
+                Кошик{qtyCount ? ` · ${qtyCount}` : ''}
+              </button>
             </div>
-            <button type="button" className="whitespace-nowrap rounded-lg bg-indigo-700 px-2.5 py-1 text-sm font-medium text-white hover:bg-indigo-800" onClick={() => setCartOpen(true)}>
-              Кошик{qtyCount ? ` · ${qtyCount}` : ''}
-            </button>
           </div>
           <nav className="hidden items-center gap-1 md:flex">
             {VIEWS.map((item) => (
