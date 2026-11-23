@@ -196,9 +196,6 @@ export default function PortalNextApp() {
               </button>
             ) : null}
           </form>
-          <button type="button" className="relative rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800" onClick={() => setCartOpen(true)}>
-            Кошик{qtyCount ? ` · ${qtyCount}` : ''}
-          </button>
           <div className="relative">
             <button type="button" className="rounded-xl bg-stone-100 px-3 py-2 text-sm hover:bg-stone-200" onClick={() => setMenuOpen((v) => !v)}>
               {session.client?.name || 'Профіль'}
@@ -216,17 +213,22 @@ export default function PortalNextApp() {
           <BalanceChip code="UAH" amount={session.balances.UAH} known={session.hasBalances} onOpen={() => openLedger('UAH')} />
           <BalanceChip code="EUR" amount={session.balances.EUR} known={session.hasBalances} onOpen={() => openLedger('EUR')} />
           {session.uahRate ? <span className="text-xs text-stone-500">Курс {Number(session.uahRate).toFixed(2)}</span> : null}
-          <div className="ml-auto flex rounded-xl bg-stone-100 p-1 text-sm">
-            {['EUR', 'UAH'].map((code) => (
-              <button
-                key={code}
-                type="button"
-                onClick={() => session.setSelectedCurrency(code)}
-                className={`rounded-lg px-3 py-1 ${session.selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'}`}
-              >
-                {code}
-              </button>
-            ))}
+          <div className="ml-auto flex items-center gap-2">
+            <div className="flex rounded-xl bg-stone-100 p-1 text-sm">
+              {['EUR', 'UAH'].map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => session.setSelectedCurrency(code)}
+                  className={`rounded-lg px-3 py-1 ${session.selectedCurrency === code ? 'bg-white font-medium text-indigo-700 shadow-sm' : 'text-stone-600'}`}
+                >
+                  {code}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="whitespace-nowrap rounded-lg bg-indigo-700 px-2.5 py-1 text-sm font-medium text-white hover:bg-indigo-800" onClick={() => setCartOpen(true)}>
+              Кошик{qtyCount ? ` · ${qtyCount}` : ''}
+            </button>
           </div>
           <nav className="hidden items-center gap-1 md:flex">
             {VIEWS.map((item) => (

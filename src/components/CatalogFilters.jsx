@@ -14,6 +14,7 @@ import {
 } from "../utils/catalogFilters.js";
 
 const SEEN_KEY = "portalCatalogFiltersSeen";
+const FILTER_HINT = "Фасовка, в’язкість і допуск. Звужує вже відкритий список.";
 
 function readSeen() {
   try {
@@ -175,6 +176,7 @@ export default function CatalogFilters({ category, value, onChange }) {
   return (
     <>
       <div className="relative">
+        <div className="group relative">
         {showNew ? (
           <span className="pointer-events-none absolute -top-2 right-1 z-10 rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-white">
             нове
@@ -184,6 +186,7 @@ export default function CatalogFilters({ category, value, onChange }) {
           type="button"
           aria-expanded={open}
           aria-haspopup="dialog"
+          aria-describedby="catalog-filters-hint"
           onClick={() => (open ? setOpen(false) : openPanel())}
           className={`rounded-xl border px-3 py-1.5 text-sm ${
             count
@@ -195,6 +198,16 @@ export default function CatalogFilters({ category, value, onChange }) {
         >
           {count ? `Фільтри · ${count}` : "Фільтри"}
         </button>
+        {open ? null : (
+          <span
+            id="catalog-filters-hint"
+            role="tooltip"
+            className="pointer-events-none absolute right-0 top-full z-20 mt-1.5 hidden w-56 rounded-lg bg-stone-900 px-2.5 py-1.5 text-left text-xs font-normal leading-snug text-white shadow-lg group-hover:block"
+          >
+            {FILTER_HINT}
+          </span>
+        )}
+        </div>
         {open ? (
           <>
             <button type="button" className="fixed inset-0 z-50 cursor-default bg-stone-900/40 md:bg-transparent" aria-label="Закрити фільтри" onClick={() => setOpen(false)} />

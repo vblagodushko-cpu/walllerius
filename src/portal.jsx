@@ -1301,6 +1301,16 @@ function PortalApp() {
     </div>
   );
 
+  const cartBtn = (
+    <button
+      type="button"
+      className="whitespace-nowrap rounded-lg bg-indigo-700 px-2.5 py-1 text-sm font-medium text-white hover:bg-indigo-800"
+      onClick={() => setIsCartVisible(true)}
+    >
+      Кошик{cart.length ? ` · ${cart.length}` : ''}
+    </button>
+  );
+
   return (
     <div className="bg-gray-100 min-h-screen font-sans p-4 sm:p-8 print:bg-white">
       <header className="mb-4 overflow-hidden rounded-lg border border-gray-200 bg-white">
@@ -1371,7 +1381,10 @@ function PortalApp() {
               {sectionBtn('profile', 'Профіль', true)}
             </nav>
             <span className="md:hidden">{logoutBtn(true)}</span>
-            {currencySwitch}
+            <div className="flex items-center gap-2">
+              {currencySwitch}
+              {cartBtn}
+            </div>
           </div>
         </div>
       </header>
@@ -1419,13 +1432,6 @@ function PortalApp() {
               value={catalogFilters}
               onChange={setCatalogFilters}
             />
-            <button
-              type="button"
-              className="rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
-              onClick={() => setIsCartVisible(true)}
-            >
-              Кошик{cart.length ? ` · ${cart.length}` : ''}
-            </button>
           </div>
           </>
         )}
