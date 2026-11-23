@@ -10,8 +10,8 @@ import './index.css';
 import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
-import PackSizeFilter from './components/PackSizeFilter.jsx';
-import { packMatchesBucket } from './utils/packFilter.js';
+import CatalogFilters from './components/CatalogFilters.jsx';
+import { productMatchesCatalogFilters } from './utils/catalogFilters.js';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
@@ -586,15 +586,15 @@ function PortalApp() {
   });
   const [selectedCategory, setSelectedCategory] = useState(null); // Категорія для фільтрації
   const [listQuery, setListQuery] = useState('');
-  const [packBucket, setPackBucket] = useState('');
+  const [catalogFilters, setCatalogFilters] = useState({ packBucket: '', viscosityTag: '', toleranceTag: '' });
   const debouncedListQuery = useDebouncedValue(listQuery, 400);
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
 
   const matchesListFilters = useCallback((product) => {
     const q = debouncedListQuery.trim().toLowerCase();
     if (q && !productHaystack(product).includes(q)) return false;
-    return packMatchesBucket(product?.pack, packBucket);
-  }, [debouncedListQuery, packBucket]);
+    return productMatchesCatalogFilters(product, catalogFilters);
+  }, [debouncedListQuery, catalogFilters]);
 
   const visibleProducts = useMemo(
     () => products.filter(matchesListFilters),
@@ -1414,7 +1414,11 @@ function PortalApp() {
               onChange={setListQuery}
               className="w-full sm:w-auto sm:min-w-[12rem] sm:flex-1"
             />
-            <PackSizeFilter value={packBucket} onChange={setPackBucket} />
+            <CatalogFilters
+              category={selectedCategory}
+              value={catalogFilters}
+              onChange={setCatalogFilters}
+            />
             <button
               type="button"
               className="rounded-xl bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-800"
