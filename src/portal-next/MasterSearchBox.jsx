@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../firebase-config.js';
 import useDebouncedValue from '../admin/hooks/useDebouncedValue.js';
@@ -39,8 +40,10 @@ export default function MasterSearchBox({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const boxRef = useRef(null);
+  const panelRef = useRef(null);
   const requestId = useRef(0);
   const suppressRef = useRef('');
+  const [place, setPlace] = useState(null);
 
   useEffect(() => {
     const q = debounced.trim();
@@ -72,14 +75,40 @@ export default function MasterSearchBox({
 
   useEffect(() => {
     const onPointer = (event) => {
-      if (!boxRef.current?.contains(event.target)) {
-        setOpen(false);
-        setActive(-1);
-      }
+      const target = event.target;
+      if (boxRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+      setActive(-1);
     };
     document.addEventListener('mousedown', onPointer);
     return () => document.removeEventListener('mousedown', onPointer);
   }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const el = boxRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      const top = rect.bottom + 4;
+      setPlace({
+        top,
+        left: rect.left,
+        width: rect.width,
+        maxHeight: Math.max(120, window.innerHeight - top - 12),
+      });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open]);
 
   const dismissNew = () => {
     if (!showNew) return;
@@ -152,10 +181,15 @@ export default function MasterSearchBox({
           aria-autocomplete="list"
           aria-expanded={open}
         />
-        {open ? (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg">
+        {open && place ? createPortal(
+          <div
+            ref={panelRef}
+            style={{ top: place.top, left: place.left, width: place.width, maxHeight: place.maxHeight }}
+            className="fixed z-[70] overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg"
+            onMouseDown={(event) => event.preventDefault()}
+          >
             {items.length ? (
-              <ul className="max-h-80 overflow-auto py-1" role="listbox">
+              <ul className="overflow-auto py-1" style={{ maxHeight: place.maxHeight }} role="listbox">
                 {items.map((item, index) => (
                   <li key={`${item.brand}-${item.id}`}>
                     <button
@@ -175,7 +209,8 @@ export default function MasterSearchBox({
             ) : (
               <p className="px-3 py-2 text-sm text-stone-500">{EMPTY_HINT}</p>
             )}
-          </div>
+          </div>,
+          document.body,
         ) : null}
       </div>
       <button type="submit" disabled={searching} className={classic
