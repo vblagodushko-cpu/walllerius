@@ -1362,7 +1362,7 @@ function PortalApp() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-1.5 sm:px-4">
+        <div className="flex flex-col gap-2 border-t border-gray-100 px-3 py-2 md:flex-row md:items-center md:justify-between md:gap-3 md:px-4 md:py-1.5">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
             {hasBalances ? (
               <>
@@ -1374,13 +1374,15 @@ function PortalApp() {
             )}
             {uahRate ? <span className="text-gray-500">курс {Number(uahRate).toFixed(2)}</span> : null}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <nav className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5 md:hidden" aria-label="Розділи порталу">
-              {sectionBtn('orders', 'Замовлення', true)}
-              {sectionBtn('settlements', 'Звірка', true)}
-              {sectionBtn('profile', 'Профіль', true)}
-            </nav>
-            <span className="md:hidden">{logoutBtn(true)}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 md:hidden">
+              <nav className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5" aria-label="Розділи порталу">
+                {sectionBtn('orders', 'Замовлення', true)}
+                {sectionBtn('settlements', 'Звірка', true)}
+                {sectionBtn('profile', 'Профіль', true)}
+              </nav>
+              {logoutBtn(true)}
+            </div>
             <div className="flex items-center gap-2">
               {currencySwitch}
               {cartBtn}
