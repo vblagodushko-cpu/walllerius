@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { compactArticle, articleSearchKeys, suggestMasterCards } = require("./articleKey");
+const { compactArticle, articleSearchKeys, suggestMasterCards, matchMasterPhrase } = require("./articleKey");
 
 test("дефіс і крапка не заважають збігу артикула", () => {
   assert.equal(compactArticle("08880-80845-BB"), "0888080845BB");
@@ -30,4 +30,15 @@ test("підказка майстра: префікс артикула попе�
   const bySynonym = suggestMasterCards(cards, "0888080845");
   assert.equal(bySynonym[0].id, "08880-80845-BB");
   assert.equal(bySynonym[0].via, "article");
+});
+
+test("фраза шукає бренд разом із в’язкістю або допуском", () => {
+  const cards = [
+    { brand: "ARAL", id: "AR-1", correctName: "HighTronic", viscosityTags: ["SAE:5W-30"], pack: "5 л" },
+    { brand: "ARAL", id: "AR-2", correctName: "HighTronic", viscosityTags: ["SAE:5W-40"] },
+    { brand: "FUCHS", id: "FU-1", correctName: "TITAN GT1", tolerances: "VW 507.00", toleranceTags: ["VW:507.00"] },
+    { brand: "FUCHS", id: "FU-2", correctName: "TITAN", tolerances: "VW 504.00" },
+  ];
+  assert.deepEqual(matchMasterPhrase(cards, "aral 5w-30").map((item) => item.id), ["AR-1"]);
+  assert.deepEqual(matchMasterPhrase(cards, "fuchs 507").map((item) => item.id), ["FU-1"]);
 });

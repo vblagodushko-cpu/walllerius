@@ -2078,6 +2078,7 @@ exports.test = onCall({ region: REGION, cors: true }, async () => {
 // search
 exports.searchProductsByArticle = require("./search").searchProductsByArticle;
 exports.suggestMasterProducts = require("./search").suggestMasterProducts;
+exports.searchCatalog = require("./search").searchCatalog;
 
 // maintenance
 exports.deleteAllProducts  = require("./maintenance").deleteAllProducts;

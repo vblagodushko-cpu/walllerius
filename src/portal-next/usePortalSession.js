@@ -500,16 +500,16 @@ export function usePortalSession() {
     if (!article) return { ok: false };
     setIsSearchingArticle(true);
     try {
-      const { data } = await httpsCallable(functions, 'searchProductsByArticle')({ article });
-      if (data?.ok) {
+      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article });
+      if (data?.ok && data.products?.length) {
         setSelectedBrand(null);
         setSelectedGroup(null);
         setSelectedCategory(null);
-        setProducts(data.products || []);
+        setProducts(data.products);
         setLastDocSnap(null);
         setHasMore(false);
         setIsArticleSearchActive(true);
-        return { ok: true };
+        return { ok: true, interpreted: Boolean(data.interpreted) };
       }
       setProducts([]);
       setIsArticleSearchActive(false);

@@ -2,8 +2,8 @@
 const { onCall } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
-const { normalizeArticle, APP_ID, listProductMasterCards } = require("./shared");
-const { compactArticle, suggestMasterCards } = require("./articleKey");
+const { normalizeArticle, normalizeBrandKey, APP_ID, listProductMasterCards } = require("./shared");
+const { compactArticle, suggestMasterCards, matchMasterPhrase } = require("./articleKey");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
@@ -141,5 +141,86 @@ exports.suggestMasterProducts = onCall(
     if (q.trim().length < 2) return { ok: true, items: [] };
     const cards = await listProductMasterCards();
     return { ok: true, items: suggestMasterCards(cards, q, 8) };
+  }
+);
+
+async function productsForMasterHits(productsCol, hits) {
+  const ids = [...new Set(hits.map((hit) => hit.id).filter(Boolean))].slice(0, 30);
+  if (!ids.length) return [];
+  const byId = new Map();
+  const snap = await productsCol.where("id", "in", ids).get();
+  snap.docs.forEach((doc) => {
+    const data = doc.data() || {};
+    const list = byId.get(data.id) || [];
+    list.push({ docId: doc.id, ...data });
+    byId.set(data.id, list);
+  });
+  const products = [];
+  const seen = new Set();
+  hits.forEach((hit) => {
+    const candidates = byId.get(hit.id) || [];
+    const brandKey = normalizeBrandKey(hit.brand);
+    const match = candidates.find((product) => normalizeBrandKey(product.brand) === brandKey) || candidates[0];
+    if (!match || seen.has(match.docId)) return;
+    seen.add(match.docId);
+    products.push(match);
+  });
+  return products;
+}
+
+/**
+ * Запасний портал: точний артикул по каталогу, інакше фраза по майстер-картках
+ * (бренд, назва, в’язкість, допуск, фасовка, категорія) і їхні товари з ціною.
+ */
+exports.searchCatalog = onCall(
+  { region: REGION, cors: true },
+  async (request) => {
+    const { HttpsError } = require("firebase-functions/v2/https");
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Потрібна авторизація.");
+    }
+    const q = String(request.data?.q || request.data?.article || "").trim().slice(0, 80);
+    if (!q) return { ok: false, error: "Запит обов'язковий", products: [] };
+
+    const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
+    const normalizedArticle = normalizeArticle(q);
+    const compact = normalizedArticle.replace(/[.-]/g, "");
+    const keys = [...new Set([normalizedArticle, compact].filter(Boolean))];
+    const found = keys.length ? await findByArticleKeys(productsCol, keys) : { allProducts: new Map(), idHits: 0, synonymHits: 0 };
+    let { allProducts, idHits, synonymHits } = found;
+    const looksLikeArticle = !/\s/.test(q) && compact.length >= 4;
+
+    if (!allProducts.size && looksLikeArticle) {
+      const index = await loadCompactIndex(productsCol);
+      const hits = index.get(compact) || [];
+      if (hits.length) {
+        const refs = hits.map((hit) => productsCol.doc(hit.docId));
+        const docs = await db.getAll(...refs);
+        docs.forEach((doc) => {
+          if (!doc.exists) return;
+          allProducts.set(doc.id, { docId: doc.id, ...doc.data() });
+        });
+        hits.forEach((hit) => {
+          if (hit.via === "synonym") synonymHits += 1;
+          else idHits += 1;
+        });
+      }
+    }
+
+    if (allProducts.size) {
+      const products = Array.from(allProducts.values());
+      return {
+        ok: true,
+        products,
+        interpreted: false,
+        foundViaSynonym: synonymHits > 0 && idHits === 0,
+        count: products.length,
+      };
+    }
+
+    const cards = await listProductMasterCards();
+    const hits = matchMasterPhrase(cards, q, 20);
+    const products = await productsForMasterHits(productsCol, hits);
+    return { ok: true, products, interpreted: true, count: products.length };
   }
 );

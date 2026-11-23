@@ -149,7 +149,7 @@ export default function PortalNextApp() {
     setCatalogOpen(false);
     const result = await session.searchArticle(article);
     if (result?.error) setNotice({ tone: 'err', text: result.error });
-    else if (result && result.ok === false) setNotice({ tone: 'err', text: 'За цим артикулом нічого не знайдено.' });
+    else if (result && result.ok === false) setNotice({ tone: 'err', text: 'Нічого не знайдено.' });
     else setNotice(null);
   };
 
