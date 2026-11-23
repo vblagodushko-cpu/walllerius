@@ -1,5 +1,5 @@
 import { PACK_BUCKETS, packMatchesBucket } from "./packFilter.js";
-import { TOLERANCE_FILTER_PROFILES } from "./tolerances.js";
+import { TOLERANCE_FILTER_PROFILES, expandToleranceFilterTag } from "./tolerances.js";
 import { VISCOSITY_FILTER_PROFILES } from "./viscosities.js";
 
 export function splitTag(tag) {
@@ -12,14 +12,21 @@ export function splitTag(tag) {
 function hasTag(tags, wanted) {
   const needle = String(wanted || "").trim().toUpperCase();
   if (!needle) return true;
-  return (Array.isArray(tags) ? tags : []).some((tag) => String(tag || "").trim().toUpperCase() === needle);
+  return hasAnyTag(tags, [needle]);
+}
+
+function hasAnyTag(tags, wanted) {
+  const needles = (Array.isArray(wanted) ? wanted : []).map((tag) => String(tag || "").trim().toUpperCase()).filter(Boolean);
+  if (!needles.length) return true;
+  const have = new Set((Array.isArray(tags) ? tags : []).map((tag) => String(tag || "").trim().toUpperCase()));
+  return needles.some((tag) => have.has(tag));
 }
 
 /** Точний збіг фасовки і тегів. Порожній фільтр нічого не відсікає. */
 export function productMatchesCatalogFilters(product, filters = {}) {
   if (!packMatchesBucket(product?.pack, filters.packBucket || "")) return false;
   if (filters.viscosityTag && !hasTag(product?.viscosityTags, filters.viscosityTag)) return false;
-  if (filters.toleranceTag && !hasTag(product?.toleranceTags, filters.toleranceTag)) return false;
+  if (filters.toleranceTag && !hasAnyTag(product?.toleranceTags, expandToleranceFilterTag(filters.toleranceTag))) return false;
   return true;
 }
 

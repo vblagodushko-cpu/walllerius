@@ -69,6 +69,53 @@ export const TOLERANCE_SYSTEMS = {
   },
 };
 
+/** Кнопки фільтра порталу. У товарі лишаються окремі теги, кнопка збігається з будь-яким із codes. */
+export const VW_FILTER_CHOICES = [
+  { id: "501.01", label: "501.01", kind: "oil", codes: ["501.01"] },
+  { id: "502.00/505.00", label: "502.00/505.00", kind: "oil", codes: ["502.00", "505.00"] },
+  { id: "503.00", label: "503.00", kind: "oil", codes: ["503.00"] },
+  { id: "503.01", label: "503.01", kind: "oil", codes: ["503.01"] },
+  { id: "504.00/507.00", label: "504.00/507.00", kind: "oil", codes: ["504.00", "507.00"] },
+  { id: "505.01", label: "505.01", kind: "oil", codes: ["505.01"] },
+  { id: "506.00", label: "506.00", kind: "oil", codes: ["506.00"] },
+  { id: "506.01", label: "506.01", kind: "oil", codes: ["506.01"] },
+  { id: "508.00/509.00", label: "508.00/509.00", kind: "oil", codes: ["508.00", "509.00"] },
+  { id: "511.00", label: "511.00", kind: "oil", codes: ["511.00", "511"] },
+  { id: "G11/774-C", label: "G11/774-C", kind: "coolant", codes: ["G11", "774-C", "TL-774-C"] },
+  { id: "G12/774-D", label: "G12/774-D", kind: "coolant", codes: ["G12", "774-D", "TL-774-D"] },
+  { id: "G12+/774-F", label: "G12+/774-F", kind: "coolant", codes: ["G12+", "774-F", "TL-774-F"] },
+  { id: "G12++/774-G", label: "G12++/774-G", kind: "coolant", codes: ["G12++", "774-G", "TL-774-G"] },
+  { id: "G13/774-J", label: "G13/774-J", kind: "coolant", codes: ["G13", "774-J", "TL-774-J"] },
+  { id: "G12evo/774-L", label: "G12evo/774-L", kind: "coolant", codes: ["G12EVO", "774-L", "TL-774-L"] },
+];
+
+const COOLANT_CATEGORIES = new Set(["Охолоджуючі рідини"]);
+const OIL_CATEGORIES = new Set(["Оливи моторні", "Оливи трансмісійні", "Гальмівні та гідравлічні рідини"]);
+
+export function toleranceFilterChoices(system, category) {
+  const options = TOLERANCE_SYSTEMS[system]?.options || [];
+  if (system !== "VW") {
+    return options.map((code) => ({ id: code, label: code, codes: [code] }));
+  }
+  const name = String(category || "").trim();
+  const kind = COOLANT_CATEGORIES.has(name) ? "coolant" : OIL_CATEGORIES.has(name) ? "oil" : "";
+  const source = kind ? VW_FILTER_CHOICES.filter((choice) => choice.kind === kind) : VW_FILTER_CHOICES;
+  return source.map((choice) => ({ id: choice.id, label: choice.label, codes: choice.codes }));
+}
+
+export function expandToleranceFilterTag(tag) {
+  const raw = String(tag || "").trim().toUpperCase();
+  const index = raw.indexOf(":");
+  if (index <= 0) return [];
+  const system = raw.slice(0, index);
+  const code = raw.slice(index + 1);
+  const choice = system === "VW"
+    ? VW_FILTER_CHOICES.find((item) => item.id.toUpperCase() === code)
+    : null;
+  const codes = choice ? choice.codes : [code];
+  return codes.map((item) => `${system}:${String(item).toUpperCase()}`);
+}
+
 export const TOLERANCE_FILTER_PROFILES = {
   "Оливи моторні": ["ACEA", "API", "ILSAC", "JASO", "MB", "VW", "BMW", "RENAULT", "FORD", "GM"],
   "Оливи трансмісійні": ["API", "ZF", "MAN", "MB", "VW", "FORD", "GM"],

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { PACK_BUCKETS } from "../utils/packFilter.js";
-import { TOLERANCE_SYSTEMS, buildToleranceTag } from "../utils/tolerances.js";
+import { TOLERANCE_SYSTEMS, buildToleranceTag, toleranceFilterChoices } from "../utils/tolerances.js";
 import { VISCOSITY_SYSTEMS, buildViscosityTag } from "../utils/viscosities.js";
 import {
   catalogFilterCount,
@@ -64,6 +64,7 @@ function Choice({ active, title, onClick, children, system = false }) {
 
 function FilterSection({ title, systems, systemLabels, caption, activeSystem, onSystem, hasMore, expanded, onToggleMore, codes, activeCode, onCode }) {
   if (!systems.length) return null;
+  const items = codes.map((code) => (typeof code === "string" ? { id: code, label: code } : code));
   return (
     <section className="mt-4">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-500">{title}</h3>
@@ -79,11 +80,11 @@ function FilterSection({ title, systems, systemLabels, caption, activeSystem, on
           </button>
         ) : null}
       </div>
-      {activeSystem && codes.length ? (
+      {activeSystem && items.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {codes.map((code) => (
-            <Choice key={code} active={sameTag(code, activeCode)} onClick={() => onCode(code)}>
-              {code}
+          {items.map((item) => (
+            <Choice key={item.id} active={sameTag(item.id, activeCode)} onClick={() => onCode(item.id)}>
+              {item.label}
             </Choice>
           ))}
         </div>
@@ -273,7 +274,7 @@ export default function CatalogFilters({ category, value, onChange }) {
                 hasMore={toleranceView.hasMore}
                 expanded={expandTolerance}
                 onToggleMore={() => setExpandTolerance((value) => !value)}
-                codes={TOLERANCE_SYSTEMS[tolerancePick]?.options || []}
+                codes={toleranceFilterChoices(tolerancePick, category)}
                 activeCode={toleranceActive.system === tolerancePick ? toleranceActive.code : ""}
                 onCode={(code) => {
                   const next = buildToleranceTag(tolerancePick, code);
