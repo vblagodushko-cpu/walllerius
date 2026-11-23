@@ -3,8 +3,8 @@ import { collection, doc, getDoc, getDocs, setDoc, serverTimestamp, deleteField 
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import {
-  uploadProductImages,
   deleteProductImagesAtPaths,
+  replaceProductImages,
 } from "../../utils/productImageStorage";
 import {
   validateProductImageFile,
@@ -450,6 +450,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
       const bodyTrim =
         detailBody.length > MAX_PRODUCT_DETAIL_BODY ? detailBody.slice(0, MAX_PRODUCT_DETAIL_BODY) : detailBody;
       let imagePayload = {};
+      let savedImage = null;
       try {
         if (removeDetailImage && (detailImageStoragePath || detailImageThumbStoragePath)) {
           await deleteProductImagesAtPaths(detailImageStoragePath, detailImageThumbStoragePath);
@@ -459,12 +460,19 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
             imageStoragePath: deleteField(),
             imageThumbStoragePath: deleteField(),
           };
+          savedImage = { removed: true };
         } else if (pendingImageFile) {
-          const uploaded = await uploadProductImages(appId, product.docId, pendingImageFile);
-          if (detailImageStoragePath || detailImageThumbStoragePath) {
-            await deleteProductImagesAtPaths(detailImageStoragePath, detailImageThumbStoragePath);
-          }
-          imagePayload = uploaded;
+          imagePayload = await replaceProductImages(
+            appId,
+            product.docId,
+            pendingImageFile,
+            detailImageStoragePath,
+            detailImageThumbStoragePath
+          );
+          savedImage = {
+            imageUrl: imagePayload.imageUrl,
+            imageThumbUrl: imagePayload.imageThumbUrl,
+          };
         }
       } catch (imageErr) {
         console.error("Помилка завантаження фото", imageErr);
@@ -483,7 +491,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
         return;
       }
       notify("success", "Master-дані та опис товару збережено");
-      onSaved?.(product.docId, productPatch);
+      onSaved?.(product.docId, productPatch, savedImage);
       onClose?.();
     } catch (e) {
       console.error("Помилка збереження master-даних", e);
@@ -594,7 +602,18 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
                           ? masterForm.synonymsText
                           : masterForm[field] ?? "";
                   const proposedText = Array.isArray(proposed) ? proposed.join(", ") : String(proposed ?? "");
-                  if (!proposedText.trim()) return null;
+                  if (!proposedText.trim()) {
+                    if (field !== "categories") return null;
+                    const rejected = Array.isArray(aiSuggestion.categoryMiss?.rejected)
+                      ? aiSuggestion.categoryMiss.rejected.filter(Boolean)
+                      : [];
+                    return (
+                      <div key={field} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Категорію не призначено.
+                        {rejected.length ? ` Модель написала: ${rejected.join(", ")} — цього немає в довіднику.` : " Модель не обрала жодної категорії з довідника."}
+                      </div>
+                    );
+                  }
                   const confidence = aiSuggestion.confidence?.[field];
                   return (
                     <label key={field} className="flex gap-3 rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs">
@@ -765,7 +784,7 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
                 )}
                 <input
                   type="file"
-                  accept="image/jpeg,image/png,image/webp"
+                  accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
                   onChange={(e) => {
                     applyDetailImageFile(e.target.files?.[0]);
                     e.target.value = "";

@@ -493,6 +493,76 @@ async function removeProduct({ supplier, id, brand }) {
   }
 }
 
+function categoryListKey(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .sort()
+    .join("\u0001");
+}
+
+/**
+ * Після редагування майстер-картки записує її категорії в усі картки каталогу
+ * з тим самим брендом і артикулом (і з синонімом артикула, якщо це код, а не в'язкість).
+ * Порожній список категорій нічого не стирає.
+ */
+async function syncCatalogCategoriesForMaster({ brand, article, synonyms, categories }) {
+  const next = (Array.isArray(categories) ? categories : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  if (!next.length || !brand) return { scanned: 0, updated: 0 };
+
+  const { looksLikeSpecNotArticle } = require("./articleSynonyms");
+  const brandKey = normalizeBrandKey(brand);
+  const ids = new Set();
+  const addArticle = (value, { allowSpec = false } = {}) => {
+    const raw = String(value || "").trim();
+    const norm = normalizeArticle(value);
+    if (!norm || (!allowSpec && (norm.length < 4 || looksLikeSpecNotArticle(norm)))) return;
+    if (raw) ids.add(raw);
+    ids.add(norm);
+  };
+  addArticle(article, { allowSpec: true });
+  (Array.isArray(synonyms) ? synonyms : []).forEach((item) => addArticle(item));
+
+  const col = db.collection(`/artifacts/${APP_ID}/public/data/products`);
+  const nextKey = categoryListKey(next);
+  let scanned = 0;
+  let updated = 0;
+  let batch = db.batch();
+  let ops = 0;
+
+  const commit = async () => {
+    if (!ops) return;
+    await batch.commit();
+    batch = db.batch();
+    ops = 0;
+  };
+
+  for (const id of ids) {
+    const snap = await col.where("id", "==", id).limit(40).get();
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data() || {};
+      if (normalizeBrandKey(data.brand) !== brandKey) continue;
+      scanned += 1;
+      if (categoryListKey(data.categories) === nextKey) continue;
+      batch.set(
+        docSnap.ref,
+        {
+          categories: next,
+          masterDataUpdatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      ops += 1;
+      updated += 1;
+      if (ops >= 400) await commit();
+    }
+  }
+  await commit();
+  return { scanned, updated };
+}
+
 module.exports = {
   db,
   APP_ID,
@@ -514,5 +584,7 @@ module.exports = {
   defaultProductMasterDocId,
   findCanonicalArticleByAnyFormat,
   clearMasterDataCache,
+  categoryListKey,
+  syncCatalogCategoriesForMaster,
   _getProductMasterDataCache: () => productMasterDataCache,
 };

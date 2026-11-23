@@ -31,10 +31,25 @@ const isDelivery = (row) =>
 // Нові зверху: за датою, всередині дня за seq (порядок проведення в обліку)
 const sortDesc = (a, b) => tsMs(b.date) - tsMs(a.date) || num(b.seq) - num(a.seq);
 
-const SettlementsPage = ({ balances, client, user }) => {
+const kyivIso = (d) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Kyiv",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+
+const SettlementsPage = ({
+  balances,
+  client,
+  user,
+  initialCurrency = "EUR",
+  currencyNonce = 0,
+  showPresets = false,
+}) => {
   const clientCode = String(user?.uid || "");
 
-  const [currencyFilter, setCurrencyFilter] = useState("EUR");
+  const [currencyFilter, setCurrencyFilter] = useState(initialCurrency || "EUR");
   const [dateRange, setDateRange] = useState(() => {
     const end = new Date();
     const start = new Date();
@@ -119,11 +134,36 @@ const SettlementsPage = ({ balances, client, user }) => {
     }
   }, [buildQuery, currencyFilter, dateRange, hasMore, loading]);
 
+  // Клік по балансу в новому порталі перемикає валюту, не чіпаючи класичний портал (nonce = 0).
+  useEffect(() => {
+    if (!currencyNonce) return;
+    setCurrencyFilter(initialCurrency || "EUR");
+  }, [currencyNonce, initialCurrency]);
+
   // Автозавантаження при вході та при зміні валюти; період застосовується кнопкою "Показати"
   useEffect(() => {
     loadFirst(dateRange, currencyFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currencyFilter, clientCode]);
+
+  const applyPreset = (key) => {
+    const end = kyivIso(new Date());
+    let start = end;
+    if (key === "30") {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      start = kyivIso(d);
+    } else if (key === "month") {
+      start = `${end.slice(0, 8)}01`;
+    } else if (key === "quarter") {
+      const month = Number(end.slice(5, 7));
+      const qStart = Math.floor((month - 1) / 3) * 3 + 1;
+      start = `${end.slice(0, 5)}${String(qStart).padStart(2, "0")}-01`;
+    }
+    const range = { start, end };
+    setDateRange(range);
+    loadFirst(range, currencyFilter);
+  };
 
   // Drill-down handler
   const openDoc = useCallback(
@@ -246,6 +286,27 @@ const SettlementsPage = ({ balances, client, user }) => {
         <h2 className="text-xl font-semibold mb-4">Звірка</h2>
 
         <div className="flex flex-wrap items-end gap-4 mb-4">
+          {showPresets ? (
+            <div>
+              <label className="block text-sm mb-1">Період</label>
+              <div className="flex border rounded-lg overflow-hidden">
+                {[
+                  ["30", "30 днів"],
+                  ["month", "Цей місяць"],
+                  ["quarter", "Квартал"],
+                ].map(([key, label], i) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => applyPreset(key)}
+                    className={`px-3 py-2 text-sm bg-white text-gray-700 hover:bg-gray-50 ${i > 0 ? "border-l" : ""}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div>
             <label className="block text-sm mb-1">Валюта</label>
             <div className="flex border rounded-lg overflow-hidden">

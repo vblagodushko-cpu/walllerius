@@ -1,8 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 
-const OrderHistory = ({ orders, onFetchMore, hasMore, isFetchingMore, selectedCurrency = 'EUR', uahRate = null }) => {
+const OrderHistory = ({ orders, onFetchMore, hasMore, isFetchingMore, selectedCurrency = 'EUR', uahRate = null, onRepeat = null, focusOrderId = null }) => {
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const toggleOrder = (orderId) => setExpandedOrderId(expandedOrderId === orderId ? null : orderId);
+  useEffect(() => {
+    if (focusOrderId) setExpandedOrderId(focusOrderId);
+  }, [focusOrderId]);
   const statusColor = (s) => s === 'Нове' ? 'bg-blue-100 text-blue-800' : s === 'Частково виконано' ? 'bg-yellow-100 text-yellow-800' : s === 'Завершено' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800';
   
   const currencySymbol = selectedCurrency === 'EUR' ? '€' : '₴';
@@ -38,7 +41,7 @@ const OrderHistory = ({ orders, onFetchMore, hasMore, isFetchingMore, selectedCu
           {orders.map(order => {
             const orderTotal = calculateOrderTotal(order);
             return (
-              <div key={order.id} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+              <div key={order.id} className={`border border-gray-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow ${focusOrderId === order.id ? 'ring-2 ring-indigo-400' : ''}`}>
                 <div className="p-4 bg-gradient-to-r from-gray-50 to-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 cursor-pointer" onClick={() => toggleOrder(order.id)}>
                   <div className="flex-1">
                     <div className="flex items-center gap-3 flex-wrap">
@@ -69,6 +72,15 @@ const OrderHistory = ({ orders, onFetchMore, hasMore, isFetchingMore, selectedCu
                     <span className="font-bold text-xl text-indigo-600">
                       {orderTotal.toFixed(2)} {currencySymbol}
                     </span>
+                    {onRepeat ? (
+                      <button
+                        type="button"
+                        className="px-3 py-1 text-xs font-semibold rounded-full bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                        onClick={(e) => { e.stopPropagation(); onRepeat(order); }}
+                      >
+                        Повторити
+                      </button>
+                    ) : null}
                     <svg 
                       xmlns="http://www.w3.org/2000/svg" 
                       className={`h-5 w-5 text-gray-500 transform transition-transform ${expandedOrderId === order.id ? 'rotate-180' : ''}`} 
@@ -81,6 +93,7 @@ const OrderHistory = ({ orders, onFetchMore, hasMore, isFetchingMore, selectedCu
               </div>
               {expandedOrderId === order.id && (
                   <div className="p-4 border-t border-gray-200 bg-gray-50">
+                    {order.note ? <p className="mb-3 text-sm text-gray-600">Примітка: {order.note}</p> : null}
                     <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                         <thead className="text-left text-xs text-gray-600 uppercase bg-gray-100">

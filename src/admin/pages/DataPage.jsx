@@ -583,6 +583,34 @@ function ImportProductMasterData({ setStatus }) {
   const [exporting, setExporting] = useState(false);
   const [exportingAll, setExportingAll] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [regrouping, setRegrouping] = useState(false);
+  const [regroupNote, setRegroupNote] = useState("");
+
+  const regroupCatalogFromMaster = async () => {
+    const confirmed = window.confirm(
+      "Записати категорії з майстер-карток у каталог? Товари перейдуть у ті групи, які відповідають категоріям картки. Товари без майстер-картки не змінюються."
+    );
+    if (!confirmed) return;
+
+    setRegrouping(true);
+    setRegroupNote("");
+    try {
+      const call = httpsCallable(functions, "regroupProductsFromMaster", { timeout: 540000 });
+      const { data } = await call({});
+      const updated = Number(data?.updated) || 0;
+      const scanned = Number(data?.scanned) || 0;
+      const unchanged = Number(data?.unchanged) || 0;
+      const message = `Перегруповано ${updated} товарів. Без змін: ${unchanged}. Переглянуто: ${scanned}.`;
+      setRegroupNote(message);
+      setStatus?.({ type: "success", message });
+    } catch (e) {
+      const message = e?.message || "Не вдалося перегрупувати товари";
+      setRegroupNote(message);
+      setStatus?.({ type: "error", message });
+    } finally {
+      setRegrouping(false);
+    }
+  };
 
   const exportAllMasterData = async () => {
     if (!window.XLSX) {
@@ -859,6 +887,24 @@ function ImportProductMasterData({ setStatus }) {
       </div>
     }>
       <div className="space-y-4">
+        <div className="border border-slate-200 rounded-xl p-4">
+          <h4 className="text-sm font-semibold text-slate-800 mb-1">Перегрупувати каталог</h4>
+          <p className="text-sm text-slate-600 mb-3">
+            Записати категорії з майстер-карток у картки каталогу. Товари стають у групи за цими категоріями. Позиції без майстер-картки не змінюються.
+          </p>
+          <button
+            type="button"
+            className={`${primary} disabled:opacity-60`}
+            disabled={regrouping || importing}
+            onClick={regroupCatalogFromMaster}
+          >
+            {regrouping ? "Перегрупування…" : "Перегрупувати за майстер-даними"}
+          </button>
+          {regroupNote && (
+            <p className="text-sm text-slate-700 mt-3">{regroupNote}</p>
+          )}
+        </div>
+
         {/* Туторіал */}
         <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
           <h4 className="text-sm font-semibold text-indigo-900 mb-3">📖 Туторіал: як заповнювати Excel і імпортувати назад</h4>

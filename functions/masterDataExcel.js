@@ -366,3 +366,89 @@ exports.bulkImportProductMasterData = onCall({ region: REGION, cors: true }, asy
     errors: errors.slice(0, 20),
   };
 });
+
+/**
+ * Записує категорії з майстер-карток у каталог.
+ * Товар без майстер-картки не чіпаємо. Порожні категорії картки теж не стирають каталог.
+ */
+exports.regroupProductsFromMaster = onCall(
+  { region: REGION, cors: true, timeoutSeconds: 540, memory: "512MiB" },
+  async (request) => {
+    if (!request.auth?.token?.admin) {
+      throw new HttpsError("permission-denied", "Потрібен адмін-доступ.");
+    }
+
+    const { getProductMasterData, clearMasterDataCache, categoryListKey } = require("./shared");
+    clearMasterDataCache();
+
+    let lastDoc = null;
+    let scanned = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let noMaster = 0;
+    let emptyMaster = 0;
+
+    while (true) {
+      let page = productsCol().orderBy(FieldPath.documentId()).limit(250);
+      if (lastDoc) page = page.startAfter(lastDoc);
+      const snap = await page.get();
+      if (snap.empty) break;
+
+      let batch = db.batch();
+      let ops = 0;
+      const commit = async () => {
+        if (!ops) return;
+        await batch.commit();
+        batch = db.batch();
+        ops = 0;
+      };
+
+      for (const docSnap of snap.docs) {
+        scanned += 1;
+        const product = docSnap.data() || {};
+        const master = await getProductMasterData(product.brand, product.id);
+        const next = Array.isArray(master?.categories)
+          ? master.categories.map((item) => String(item || "").trim()).filter(Boolean)
+          : [];
+        if (!master) {
+          noMaster += 1;
+          continue;
+        }
+        if (!next.length) {
+          emptyMaster += 1;
+          continue;
+        }
+        if (categoryListKey(product.categories) === categoryListKey(next)) {
+          unchanged += 1;
+          continue;
+        }
+        batch.set(
+          docSnap.ref,
+          {
+            categories: next,
+            masterDataUpdatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        ops += 1;
+        updated += 1;
+        if (ops >= 400) await commit();
+      }
+      await commit();
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      if (snap.size < 250) break;
+    }
+
+    logger.info("regroupProductsFromMaster", {
+      uid: request.auth.uid,
+      scanned,
+      updated,
+      unchanged,
+      noMaster,
+      emptyMaster,
+    });
+
+    return { success: true, scanned, updated, unchanged, noMaster, emptyMaster };
+  }
+);
