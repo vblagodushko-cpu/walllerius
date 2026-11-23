@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { PACK_BUCKETS } from "../utils/packFilter.js";
 import { TOLERANCE_SYSTEMS, buildToleranceTag, toleranceFilterChoices } from "../utils/tolerances.js";
-import { VISCOSITY_SYSTEMS, buildViscosityTag } from "../utils/viscosities.js";
+import { VISCOSITY_SYSTEMS, COMMON_SAE_GRADES, buildViscosityTag } from "../utils/viscosities.js";
 import {
   catalogFilterCount,
   packFilterChipLabel,
@@ -38,10 +38,10 @@ function sameTag(left, right) {
   return String(left || "").toUpperCase() === String(right || "").toUpperCase();
 }
 
-function Choice({ active, title, onClick, children, system = false }) {
+function Choice({ active, title, onClick, children, system = false, emphasis = false }) {
   const shape = system
     ? "rounded-lg px-2 py-1 text-xs font-medium"
-    : "rounded-full border px-2.5 py-1 text-sm";
+    : `rounded-full border px-2.5 py-1 text-sm ${emphasis ? "font-semibold" : ""}`;
   const tone = system
     ? active
       ? "bg-stone-900 text-white"
@@ -83,7 +83,7 @@ function FilterSection({ title, systems, systemLabels, caption, activeSystem, on
       {activeSystem && items.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {items.map((item) => (
-            <Choice key={item.id} active={sameTag(item.id, activeCode)} onClick={() => onCode(item.id)}>
+            <Choice key={item.id} title={item.title} emphasis={item.emphasis} active={sameTag(item.id, activeCode)} onClick={() => onCode(item.id)}>
               {item.label}
             </Choice>
           ))}
@@ -256,7 +256,11 @@ export default function CatalogFilters({ category, value, onChange }) {
                 hasMore={viscosityView.hasMore}
                 expanded={expandViscosity}
                 onToggleMore={() => setExpandViscosity((value) => !value)}
-                codes={VISCOSITY_SYSTEMS[viscosityPick]?.options || []}
+                codes={(VISCOSITY_SYSTEMS[viscosityPick]?.options || []).map((code) => ({
+                  id: code,
+                  label: code,
+                  emphasis: viscosityPick === "SAE" && COMMON_SAE_GRADES.includes(code),
+                }))}
                 activeCode={viscosityActive.system === viscosityPick ? viscosityActive.code : ""}
                 onCode={(code) => {
                   const next = buildViscosityTag(viscosityPick, code);

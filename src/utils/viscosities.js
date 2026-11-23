@@ -1,3 +1,5 @@
+export const COMMON_SAE_GRADES = ["0W-20", "0W-30", "5W-30", "5W-40", "10W-40"];
+
 export const VISCOSITY_SYSTEMS = {
   SAE: {
     label: "SAE",

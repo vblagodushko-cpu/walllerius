@@ -73,12 +73,9 @@ export const TOLERANCE_SYSTEMS = {
 export const VW_FILTER_CHOICES = [
   { id: "501.01", label: "501.01", kind: "oil", codes: ["501.01"] },
   { id: "502.00/505.00", label: "502.00/505.00", kind: "oil", codes: ["502.00", "505.00"] },
-  { id: "503.00", label: "503.00", kind: "oil", codes: ["503.00"] },
-  { id: "503.01", label: "503.01", kind: "oil", codes: ["503.01"] },
+  { id: "503/506", label: "503/506", kind: "oil", title: "503.00, 503.01, 506.00, 506.01", codes: ["503.00", "503.01", "506.00", "506.01"] },
   { id: "504.00/507.00", label: "504.00/507.00", kind: "oil", codes: ["504.00", "507.00"] },
   { id: "505.01", label: "505.01", kind: "oil", codes: ["505.01"] },
-  { id: "506.00", label: "506.00", kind: "oil", codes: ["506.00"] },
-  { id: "506.01", label: "506.01", kind: "oil", codes: ["506.01"] },
   { id: "508.00/509.00", label: "508.00/509.00", kind: "oil", codes: ["508.00", "509.00"] },
   { id: "511.00", label: "511.00", kind: "oil", codes: ["511.00", "511"] },
   { id: "G11/774-C", label: "G11/774-C", kind: "coolant", codes: ["G11", "774-C", "TL-774-C"] },
@@ -100,7 +97,7 @@ export function toleranceFilterChoices(system, category) {
   const name = String(category || "").trim();
   const kind = COOLANT_CATEGORIES.has(name) ? "coolant" : OIL_CATEGORIES.has(name) ? "oil" : "";
   const source = kind ? VW_FILTER_CHOICES.filter((choice) => choice.kind === kind) : VW_FILTER_CHOICES;
-  return source.map((choice) => ({ id: choice.id, label: choice.label, codes: choice.codes }));
+  return source.map((choice) => ({ id: choice.id, label: choice.label, codes: choice.codes, title: choice.title }));
 }
 
 export function expandToleranceFilterTag(tag) {
