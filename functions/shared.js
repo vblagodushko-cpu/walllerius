@@ -199,7 +199,9 @@ async function loadAllCaches() {
           if (data.synonyms && Array.isArray(data.synonyms)) {
             data.synonyms.forEach((syn) => {
               const normalizedSyn = normalizeArticle(syn);
+              if (!normalizedSyn || normalizedSyn === normalizedId) return;
               const synKey = `${brandKey}__${normalizedSyn}`;
+              if (synKey === key) return;
               productMasterDataCache.set(synKey, { ...row, _isSynonym: true });
             });
           }
@@ -285,16 +287,14 @@ function defaultProductMasterDocId(displayBrand, articleNorm) {
 
 async function listProductMasterCards() {
   await loadAllCaches();
-  const seen = new Set();
-  const cards = [];
+  const byDoc = new Map();
   for (const row of productMasterDataCache.values()) {
-    if (!row || row._isSynonym) continue;
-    const docId = row._masterFirestoreId;
-    if (!docId || seen.has(docId)) continue;
-    seen.add(docId);
-    cards.push(stripMasterCacheInternalFields(row));
+    const docId = row?._masterFirestoreId;
+    if (!docId) continue;
+    const prev = byDoc.get(docId);
+    if (!prev || (prev._isSynonym && !row._isSynonym)) byDoc.set(docId, row);
   }
-  return cards;
+  return [...byDoc.values()].map((row) => stripMasterCacheInternalFields(row));
 }
 
 /**
