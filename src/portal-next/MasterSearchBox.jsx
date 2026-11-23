@@ -4,6 +4,23 @@ import { functions } from '../firebase-config.js';
 import useDebouncedValue from '../admin/hooks/useDebouncedValue.js';
 
 const EMPTY_HINT = 'У ваших товарах немає. Натисніть Знайти для пошуку по всьому каталогу.';
+const SEEN_KEY = 'portalSearchBoxSeen';
+
+function readSeen() {
+  try {
+    return localStorage.getItem(SEEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeSeen() {
+  try {
+    localStorage.setItem(SEEN_KEY, '1');
+  } catch {
+    /* приватний режим браузера */
+  }
+}
 
 export default function MasterSearchBox({
   value,
@@ -17,6 +34,7 @@ export default function MasterSearchBox({
 }) {
   const classic = tone === 'classic';
   const debounced = useDebouncedValue(value, 300);
+  const [showNew, setShowNew] = useState(() => !readSeen());
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -63,7 +81,14 @@ export default function MasterSearchBox({
     return () => document.removeEventListener('mousedown', onPointer);
   }, []);
 
+  const dismissNew = () => {
+    if (!showNew) return;
+    writeSeen();
+    setShowNew(false);
+  };
+
   const pick = (item) => {
+    dismissNew();
     suppressRef.current = item.id;
     requestId.current += 1;
     setOpen(false);
@@ -92,9 +117,10 @@ export default function MasterSearchBox({
 
   return (
     <form
-      className="flex min-w-[16rem] flex-1 items-center gap-2"
+      className={`flex min-w-[16rem] flex-1 items-center gap-2 ${showNew ? 'pt-2' : ''}`}
       onSubmit={(event) => {
         event.preventDefault();
+        dismissNew();
         requestId.current += 1;
         setOpen(false);
         setActive(-1);
@@ -102,12 +128,18 @@ export default function MasterSearchBox({
       }}
     >
       <div ref={boxRef} className="relative min-w-0 flex-1">
+        {showNew ? (
+          <span className="pointer-events-none absolute -top-2 right-2 z-10 rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-white">
+            нове
+          </span>
+        ) : null}
         <input
           type="search"
           value={value}
           onChange={(event) => {
             suppressRef.current = '';
             onChange(event.target.value);
+            if (event.target.value.trim()) dismissNew();
           }}
           onFocus={() => {
             if (items.length || (debounced.trim().length >= 2 && debounced.trim() !== suppressRef.current)) setOpen(true);
@@ -115,8 +147,8 @@ export default function MasterSearchBox({
           onKeyDown={onKeyDown}
           placeholder="Артикул або назва"
           className={classic
-            ? 'h-10 w-full rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'
-            : 'w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-indigo-500'}
+            ? `h-10 w-full rounded-lg border px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 ${showNew ? 'border-indigo-400 bg-indigo-50 ring-2 ring-indigo-200' : 'border-gray-200'}`
+            : `w-full rounded-xl border px-3 py-2 text-sm outline-none focus:border-indigo-500 ${showNew ? 'border-indigo-400 bg-indigo-50 ring-2 ring-indigo-200' : 'border-stone-200'}`}
           aria-autocomplete="list"
           aria-expanded={open}
         />
