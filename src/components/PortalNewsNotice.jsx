@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 const SEEN_KEY = 'portalNewsSeen';
-const NEWS_ID = 'catalog-spec-filters';
+const NEWS_ID = 'catalog-phrase-search';
 const FILTER_USED_KEY = 'portalFilterUsed';
 const TILES_USED_KEY = 'portalTilesUsed';
 
@@ -36,7 +36,7 @@ export default function PortalNewsNotice() {
   return (
     <div className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">
       <p>
-        <b>Нове в каталозі.</b> Кнопка <b>Фільтри</b> збирає фасовку, в’язкість і допуск. Вибір звужує вже відкритий список, без нового пошуку.
+        <b>Нове в пошуку.</b> Поле підказує ваші товари за артикулом і назвою. <b>Знайти</b> відкриває каталог: точний артикул або фразу на кшталт <b>aral 5w30</b> і <b>fuchs 507</b>, уже з ціною.
       </p>
       <button
         type="button"

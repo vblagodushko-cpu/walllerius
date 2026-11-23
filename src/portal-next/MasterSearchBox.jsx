@@ -13,7 +13,9 @@ export default function MasterSearchBox({
   searching,
   showReset,
   onReset,
+  tone = 'next',
 }) {
+  const classic = tone === 'classic';
   const debounced = useDebouncedValue(value, 300);
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
@@ -112,7 +114,9 @@ export default function MasterSearchBox({
           }}
           onKeyDown={onKeyDown}
           placeholder="Артикул або назва"
-          className="w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+          className={classic
+            ? 'h-10 w-full rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'
+            : 'w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-indigo-500'}
           aria-autocomplete="list"
           aria-expanded={open}
         />
@@ -142,7 +146,9 @@ export default function MasterSearchBox({
           </div>
         ) : null}
       </div>
-      <button type="submit" disabled={searching} className="rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:opacity-50">
+      <button type="submit" disabled={searching} className={classic
+        ? 'h-10 shrink-0 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 sm:px-4'
+        : 'rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:opacity-50'}>
         {searching ? '…' : 'Знайти'}
       </button>
       {showReset ? (

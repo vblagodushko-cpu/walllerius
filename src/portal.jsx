@@ -11,6 +11,7 @@ import { auth, db, functions } from './firebase-config.js';
 import ProductCatalog from './components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
 import CatalogFilters from './components/CatalogFilters.jsx';
+import MasterSearchBox from './portal-next/MasterSearchBox.jsx';
 import { productMatchesCatalogFilters } from './utils/catalogFilters.js';
 import { productMatchesListQuery } from './utils/articleMatch.js';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
@@ -611,6 +612,8 @@ function PortalApp() {
   // Пошук по артикулу
   const [articleSearch, setArticleSearch] = useState('');
   const [isSearchingArticle, setIsSearchingArticle] = useState(false);
+  const [phraseHasMore, setPhraseHasMore] = useState(false);
+  const phraseOffsetRef = useRef(0);
 
 
   const safeClient = useMemo(() => clientData || { name: user?.displayName || user?.phoneNumber || 'Клієнт', priceType: 'роздріб' }, [clientData, user]);
@@ -1053,6 +1056,13 @@ function PortalApp() {
     }
   }, [articleSearch, isArticleSearchActive]);
 
+  useEffect(() => {
+    if (!isArticleSearchActive) {
+      setPhraseHasMore(false);
+      phraseOffsetRef.current = 0;
+    }
+  }, [isArticleSearchActive]);
+
   const handleAddToCart = (product, price, quantity) => {
     // Отримуємо supplier з product (якщо передано selectedSupplier)
     const supplier = product.selectedSupplier || 'Мій склад';
@@ -1178,29 +1188,24 @@ function PortalApp() {
 
   const logout = async () => { await signOut(auth); localStorage.removeItem('shoppingCart'); window.location.href = '/login.html'; };
 
-  // Функція пошуку по артикулу
-  const handleArticleSearch = async () => {
-    if (!articleSearch.trim()) return;
-    
+  const handleArticleSearch = async (explicitArticle) => {
+    const article = String(explicitArticle ?? articleSearch).trim();
+    if (!article) return;
+
     setIsSearchingArticle(true);
     try {
-      const call = httpsCallable(functions, 'searchProductsByArticle');
-      const { data } = await call({ article: articleSearch.trim() });
-      
-      if (data.ok) {
-        // Перемикаємося на "Товари"
-        setView('products');
-        // Замінюємо список товарів результатами пошуку
+      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article, offset: 0 });
+      setView('products');
+      if (data?.ok && data.products?.length) {
         setProducts(data.products);
-        // Встановлюємо флаг активного пошуку
+        setHasMore(false);
+        phraseOffsetRef.current = data.nextOffset || 0;
+        setPhraseHasMore(Boolean(data.interpreted && data.hasMore));
         setIsArticleSearchActive(true);
-        if (data.foundViaSynonym) {
-          logger.debug(`Знайдено через синонім. Канонічний артикул: ${data.canonicalArticle}`);
-        }
       } else {
-        // При помилці - порожній список
-        setView('products');
         setProducts([]);
+        phraseOffsetRef.current = 0;
+        setPhraseHasMore(false);
         setIsArticleSearchActive(false);
       }
     } catch (e) {
@@ -1210,6 +1215,40 @@ function PortalApp() {
       setIsArticleSearchActive(false);
     } finally {
       setIsSearchingArticle(false);
+    }
+  };
+
+  const handleLoadMorePhrase = async () => {
+    const article = articleSearch.trim();
+    if (!article || !phraseHasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article, offset: phraseOffsetRef.current });
+      const next = data?.products || [];
+      setProducts((cur) => {
+        const seen = new Set(cur.map((item) => item.docId));
+        return [...cur, ...next.filter((item) => item?.docId && !seen.has(item.docId))];
+      });
+      phraseOffsetRef.current = data?.nextOffset || phraseOffsetRef.current;
+      setPhraseHasMore(Boolean(data?.hasMore));
+    } catch (e) {
+      logger.error('Помилка довантаження пошуку:', e);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  const clearArticleSearch = () => {
+    setArticleSearch('');
+    setIsArticleSearchActive(false);
+    setPhraseHasMore(false);
+    phraseOffsetRef.current = 0;
+    if (selectedBrand) loadProductsByBrand(selectedBrand, false);
+    else if (selectedGroup && selectedGroup !== FEATURED_GROUP_ID) loadProductsByGroup(selectedGroup, false);
+    else {
+      setProducts([]);
+      setLastDocSnap(null);
+      setHasMore(false);
     }
   };
 
@@ -1318,26 +1357,19 @@ function PortalApp() {
             <span className="sm:hidden">Каталог</span>
           </button>
 
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <input
-              type="text"
-              placeholder="Артикул, напр. KL 200"
-              value={articleSearch}
-              onChange={(e) => setArticleSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleArticleSearch();
-              }}
-              className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
-            />
-            <button
-              type="button"
-              onClick={handleArticleSearch}
-              disabled={isSearchingArticle}
-              className="h-10 shrink-0 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 sm:px-4"
-            >
-              {isSearchingArticle ? '…' : 'Знайти'}
-            </button>
-          </div>
+          <MasterSearchBox
+            tone="classic"
+            value={articleSearch}
+            onChange={setArticleSearch}
+            onSearch={() => handleArticleSearch()}
+            onPick={(item) => {
+              setArticleSearch(item.id);
+              handleArticleSearch(item.id);
+            }}
+            searching={isSearchingArticle}
+            showReset={Boolean(articleSearch || isArticleSearchActive)}
+            onReset={clearArticleSearch}
+          />
 
           <div className="hidden shrink-0 items-center gap-2 md:flex">
             <nav className="flex h-10 items-center gap-0.5 rounded-xl bg-gray-100 p-1" aria-label="Розділи порталу">
@@ -1713,10 +1745,10 @@ function PortalApp() {
                     : []
                 }
           />
-              {hasMore && !isFetchingProducts && (
+              {(phraseHasMore || hasMore) && !isFetchingProducts && (
                 <div className="text-center mt-4">
                   <button
-                    onClick={handleLoadMore}
+                    onClick={phraseHasMore ? handleLoadMorePhrase : handleLoadMore}
                     disabled={isLoadingMore}
                     className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
