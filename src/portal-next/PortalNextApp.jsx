@@ -3,6 +3,7 @@ import ProductCatalog from '../components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from '../components/PortalNewsNotice.jsx';
 import CatalogFilters from '../components/CatalogFilters.jsx';
 import { productMatchesCatalogFilters } from '../utils/catalogFilters.js';
+import { productMatchesListQuery } from '../utils/articleMatch.js';
 import FeaturedProductCards from '../components/FeaturedProductCards.jsx';
 import OrderHistory from '../OrderHistory.jsx';
 import SettlementsPage from '../SettlementsPage.jsx';
@@ -18,19 +19,6 @@ const VIEWS = [
   { id: 'settlements', label: 'Звірка' },
   { id: 'profile', label: 'Профіль' },
 ];
-
-function productHaystack(product) {
-  return [
-    product?.name,
-    product?.id,
-    product?.brand,
-    product?.pack,
-    product?.viscosities,
-    product?.tolerances,
-    ...(Array.isArray(product?.viscosityTags) ? product.viscosityTags : []),
-    ...(Array.isArray(product?.toleranceTags) ? product.toleranceTags : []),
-  ].filter(Boolean).join(' ').toLowerCase();
-}
 
 function BalanceChip({ code, amount, known, onOpen }) {
   if (!known) {
@@ -94,19 +82,17 @@ export default function PortalNextApp() {
   };
 
   const visibleProducts = useMemo(() => {
-    const q = debouncedListQuery.trim().toLowerCase();
-    return session.products.filter((p) => {
-      if (q && !productHaystack(p).includes(q)) return false;
-      return productMatchesCatalogFilters(p, catalogFilters);
-    });
+    return session.products.filter((p) => (
+      productMatchesListQuery(p, debouncedListQuery)
+      && productMatchesCatalogFilters(p, catalogFilters)
+    ));
   }, [session.products, debouncedListQuery, catalogFilters]);
 
   const visibleFeatured = useMemo(() => {
-    const q = debouncedListQuery.trim().toLowerCase();
-    return session.featuredProductsData.filter((p) => {
-      if (q && !productHaystack(p).includes(q)) return false;
-      return productMatchesCatalogFilters(p, catalogFilters);
-    });
+    return session.featuredProductsData.filter((p) => (
+      productMatchesListQuery(p, debouncedListQuery)
+      && productMatchesCatalogFilters(p, catalogFilters)
+    ));
   }, [session.featuredProductsData, debouncedListQuery, catalogFilters]);
 
   const showFeaturedBlock = session.showFeatured && (

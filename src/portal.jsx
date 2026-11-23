@@ -12,6 +12,7 @@ import ProductCatalog from './components/ProductCatalog.jsx';
 import PortalNewsNotice, { PortalListFilter } from './components/PortalNewsNotice.jsx';
 import CatalogFilters from './components/CatalogFilters.jsx';
 import { productMatchesCatalogFilters } from './utils/catalogFilters.js';
+import { productMatchesListQuery } from './utils/articleMatch.js';
 import FeaturedProductCards from './components/FeaturedProductCards.jsx';
 import OrderHistory from './OrderHistory.jsx';
 import SettlementsPage from './SettlementsPage.jsx';
@@ -28,19 +29,6 @@ import {
 } from './utils/cartStockWarning.js';
 
 const FEATURED_GROUP_ID = '__featured__';
-
-function productHaystack(product) {
-  return [
-    product?.name,
-    product?.id,
-    product?.brand,
-    product?.pack,
-    product?.viscosities,
-    product?.tolerances,
-    ...(Array.isArray(product?.viscosityTags) ? product.viscosityTags : []),
-    ...(Array.isArray(product?.toleranceTags) ? product.toleranceTags : []),
-  ].filter(Boolean).join(' ').toLowerCase();
-}
 
 function FilterToggle({ checked, onChange, label }) {
   return (
@@ -591,8 +579,7 @@ function PortalApp() {
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
 
   const matchesListFilters = useCallback((product) => {
-    const q = debouncedListQuery.trim().toLowerCase();
-    if (q && !productHaystack(product).includes(q)) return false;
+    if (!productMatchesListQuery(product, debouncedListQuery)) return false;
     return productMatchesCatalogFilters(product, catalogFilters);
   }, [debouncedListQuery, catalogFilters]);
 

@@ -1,14 +1,78 @@
 // functions/search.js
 const { onCall } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
+const logger = require("firebase-functions/logger");
 const { normalizeArticle, APP_ID } = require("./shared");
+const { compactArticle } = require("./articleKey");
 
 const db = getFirestore();
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
+const COMPACT_INDEX_TTL_MS = 10 * 60 * 60 * 1000;
+
+let compactIndex = null;
+let compactIndexExpiry = 0;
+let compactIndexFlight = null;
+
+function addCompactHit(index, code, docId, via) {
+  const key = compactArticle(code);
+  if (!key || key.length < 4) return;
+  if (!index.has(key)) index.set(key, []);
+  const list = index.get(key);
+  if (list.length >= 50 || list.some((item) => item.docId === docId)) return;
+  list.push({ docId, via });
+}
+
+async function loadCompactIndex(productsCol) {
+  if (compactIndex && Date.now() < compactIndexExpiry) return compactIndex;
+  if (compactIndexFlight) return compactIndexFlight;
+
+  compactIndexFlight = (async () => {
+    const snap = await productsCol.select("id", "synonyms").get();
+    const index = new Map();
+    snap.docs.forEach((doc) => {
+      const data = doc.data() || {};
+      addCompactHit(index, data.id, doc.id, "id");
+      (Array.isArray(data.synonyms) ? data.synonyms : []).forEach((syn) => {
+        addCompactHit(index, syn, doc.id, "synonym");
+      });
+    });
+    compactIndex = index;
+    compactIndexExpiry = Date.now() + COMPACT_INDEX_TTL_MS;
+    logger.info("Article compact index loaded", { products: snap.size, keys: index.size });
+    return index;
+  })().finally(() => {
+    compactIndexFlight = null;
+  });
+
+  return compactIndexFlight;
+}
+
+async function findByArticleKeys(productsCol, keys) {
+  const allProducts = new Map();
+  let idHits = 0;
+  let synonymHits = 0;
+
+  const snaps = await Promise.all(keys.flatMap((key) => [
+    productsCol.where("id", "==", key).limit(50).get(),
+    productsCol.where("synonyms", "array-contains", key).limit(50).get(),
+  ]));
+
+  snaps.forEach((snap, index) => {
+    const viaSynonym = index % 2 === 1;
+    if (viaSynonym) synonymHits += snap.size;
+    else idHits += snap.size;
+    snap.docs.forEach((doc) => {
+      allProducts.set(doc.id, { docId: doc.id, ...doc.data() });
+    });
+  });
+
+  return { allProducts, idHits, synonymHits };
+}
 
 /**
- * Пошук товарів по артикулу (з підтримкою синонімів)
- * Шукає в товарах через id та synonyms array-contains (не залежить від кешу майстер-даних)
+ * Пошук товарів по артикулу (з підтримкою синонімів).
+ * Дефіс і крапка в запиті не обов'язкові: 0888080845-BB знаходить 08880-80845-BB.
+ * id товару не змінюється.
  */
 exports.searchProductsByArticle = onCall(
   { region: REGION, cors: true },
@@ -24,47 +88,44 @@ exports.searchProductsByArticle = onCall(
       return { ok: false, error: "Артикул обов'язковий", products: [] };
     }
 
-    // Нормалізуємо артикул для пошуку
     const normalizedArticle = normalizeArticle(article);
-    if (!normalizedArticle) {
+    const compact = normalizedArticle.replace(/[.-]/g, "");
+    const keys = [...new Set([normalizedArticle, compact].filter(Boolean))];
+    if (!normalizedArticle || !keys.length) {
       return { ok: false, error: "Невірний артикул", products: [] };
     }
-    
+
     const productsCol = db.collection(`/artifacts/${APP_ID}/public/data/products`);
-    
-    // Query 1: Пошук по основному артикулу
-    const snap1 = await productsCol
-      .where("id", "==", normalizedArticle)
-      .limit(50)
-      .get();
-    
-    // Query 2: Пошук по синонімах
-    const snap2 = await productsCol
-      .where("synonyms", "array-contains", normalizedArticle)
-      .limit(50)
-      .get();
-    
-    // Об'єднуємо та дедуплікуємо результати
-    // Товари тепер містять offers[] з пропозиціями від різних постачальників
-    const allProducts = new Map();
-    snap1.docs.forEach(doc => {
-      allProducts.set(doc.id, { docId: doc.id, ...doc.data() });
-    });
-    snap2.docs.forEach(doc => {
-      allProducts.set(doc.id, { docId: doc.id, ...doc.data() });
-    });
-    
+    const found = await findByArticleKeys(productsCol, keys);
+    let { allProducts, idHits, synonymHits } = found;
+
+    if (!allProducts.size && compact.length >= 4) {
+      const index = await loadCompactIndex(productsCol);
+      const hits = index.get(compact) || [];
+      if (hits.length) {
+        const refs = hits.map((hit) => productsCol.doc(hit.docId));
+        const docs = await db.getAll(...refs);
+        docs.forEach((doc) => {
+          if (!doc.exists) return;
+          allProducts.set(doc.id, { docId: doc.id, ...doc.data() });
+        });
+        hits.forEach((hit) => {
+          if (hit.via === "synonym") synonymHits += 1;
+          else idHits += 1;
+        });
+      }
+    }
+
     const products = Array.from(allProducts.values());
-    const foundViaSynonym = snap2.size > 0 && snap1.size === 0;
-    
+    const foundViaSynonym = synonymHits > 0 && idHits === 0;
+
     return {
       ok: true,
-      products, // Кожен товар містить offers[] з пропозиціями від постачальників
+      products,
       foundViaSynonym,
       searchedArticle: article,
-      canonicalArticle: normalizedArticle,
-      count: products.length
+      canonicalArticle: products[0]?.id || normalizedArticle,
+      count: products.length,
     };
   }
 );
-
