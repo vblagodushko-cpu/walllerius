@@ -1384,6 +1384,14 @@ function PortalApp() {
               {logoutBtn(true)}
             </div>
             <div className="flex items-center gap-2">
+              <a
+                href="https://www.fuchs.com/ua/uk/pidbir-olivi/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+              >
+                Підбір оливи
+              </a>
               {currencySwitch}
               {cartBtn}
             </div>

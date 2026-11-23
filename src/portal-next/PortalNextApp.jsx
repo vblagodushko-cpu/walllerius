@@ -214,6 +214,14 @@ export default function PortalNextApp() {
           <BalanceChip code="EUR" amount={session.balances.EUR} known={session.hasBalances} onOpen={() => openLedger('EUR')} />
           {session.uahRate ? <span className="text-xs text-stone-500">Курс {Number(session.uahRate).toFixed(2)}</span> : null}
           <div className="ml-auto flex items-center gap-2">
+            <a
+              href="https://www.fuchs.com/ua/uk/pidbir-olivi/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+            >
+              Підбір оливи
+            </a>
             <div className="flex rounded-xl bg-stone-100 p-1 text-sm">
               {['EUR', 'UAH'].map((code) => (
                 <button
