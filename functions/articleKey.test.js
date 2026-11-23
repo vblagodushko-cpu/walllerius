@@ -39,6 +39,9 @@ test("фраза шукає бренд разом із в’язкістю аб�
     { brand: "FUCHS", id: "FU-1", correctName: "TITAN GT1", tolerances: "VW 507.00", toleranceTags: ["VW:507.00"] },
     { brand: "FUCHS", id: "FU-2", correctName: "TITAN", tolerances: "VW 504.00" },
   ];
-  assert.deepEqual(matchMasterPhrase(cards, "aral 5w-30").map((item) => item.id), ["AR-1"]);
-  assert.deepEqual(matchMasterPhrase(cards, "fuchs 507").map((item) => item.id), ["FU-1"]);
+  assert.deepEqual(matchMasterPhrase(cards, "aral 5w-30").hits.map((item) => item.id), ["AR-1"]);
+  assert.deepEqual(matchMasterPhrase(cards, "fuchs 507").hits.map((item) => item.id), ["FU-1"]);
+  const page = matchMasterPhrase(cards, "fuchs", { limit: 1, offset: 1 });
+  assert.equal(page.total, 2);
+  assert.deepEqual(page.hits.map((item) => item.id), ["FU-2"]);
 });

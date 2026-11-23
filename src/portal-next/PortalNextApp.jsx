@@ -346,9 +346,14 @@ export default function PortalNextApp() {
                 ) : !session.isFetchingProducts && !showFeaturedBlock ? (
                   <p className="rounded-2xl border border-dashed border-stone-300 bg-white px-4 py-8 text-center text-sm text-stone-500">Оберіть групу або бренд у каталозі, або знайдіть товар за артикулом.</p>
                 ) : null}
-                {session.hasMore && !session.isFetchingProducts ? (
+                {(session.phraseHasMore || session.hasMore) && !session.isFetchingProducts ? (
                   <div className="mt-4 text-center">
-                    <button type="button" className="rounded-xl bg-indigo-700 px-5 py-2 text-sm text-white disabled:opacity-50" disabled={session.isLoadingMore} onClick={session.loadMoreProducts}>
+                    <button
+                      type="button"
+                      className="rounded-xl bg-indigo-700 px-5 py-2 text-sm text-white disabled:opacity-50"
+                      disabled={session.isLoadingMore}
+                      onClick={session.phraseHasMore ? session.loadMorePhrase : session.loadMoreProducts}
+                    >
                       {session.isLoadingMore ? 'Завантаження…' : 'Завантажити ще'}
                     </button>
                   </div>

@@ -113,9 +113,11 @@ function tokenHits(token, fragments) {
   return fragments.some((fragment) => fragment === token || (token.length >= 3 && fragment.startsWith(token)));
 }
 
-function matchMasterPhrase(cards, query, limit = 20) {
+function matchMasterPhrase(cards, query, options = {}) {
+  const limit = typeof options === "number" ? options : (options.limit ?? 30);
+  const offset = typeof options === "number" ? 0 : Math.max(0, options.offset || 0);
   const tokens = phraseTokens(query);
-  if (!tokens.length) return [];
+  if (!tokens.length) return { hits: [], total: 0 };
   const hits = [];
   for (const card of cards || []) {
     const id = String(card?.id || "").trim();
@@ -129,7 +131,7 @@ function matchMasterPhrase(cards, query, limit = 20) {
     });
   }
   hits.sort((a, b) => a.brand.localeCompare(b.brand) || a.id.localeCompare(b.id));
-  return hits.slice(0, limit);
+  return { hits: hits.slice(offset, offset + limit), total: hits.length };
 }
 
 module.exports = { compactArticle, articleSearchKeys, suggestMasterCards, matchMasterPhrase };

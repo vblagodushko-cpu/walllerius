@@ -77,6 +77,8 @@ export function usePortalSession() {
   const [isArticleSearchActive, setIsArticleSearchActive] = useState(false);
   const [articleSearch, setArticleSearch] = useState('');
   const [isSearchingArticle, setIsSearchingArticle] = useState(false);
+  const [phraseHasMore, setPhraseHasMore] = useState(false);
+  const phraseOffsetRef = useRef(0);
 
   const [cart, setCart] = useState(readCart);
   const [placingOrder, setPlacingOrder] = useState(false);
@@ -439,6 +441,13 @@ export function usePortalSession() {
     if (!articleSearch.trim() && isArticleSearchActive) setIsArticleSearchActive(false);
   }, [articleSearch, isArticleSearchActive]);
 
+  useEffect(() => {
+    if (!isArticleSearchActive) {
+      setPhraseHasMore(false);
+      phraseOffsetRef.current = 0;
+    }
+  }, [isArticleSearchActive]);
+
   const resetCatalogSelection = useCallback(() => {
     setSelectedBrand(null);
     setSelectedGroup(null);
@@ -500,7 +509,7 @@ export function usePortalSession() {
     if (!article) return { ok: false };
     setIsSearchingArticle(true);
     try {
-      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article });
+      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article, offset: 0 });
       if (data?.ok && data.products?.length) {
         setSelectedBrand(null);
         setSelectedGroup(null);
@@ -508,10 +517,14 @@ export function usePortalSession() {
         setProducts(data.products);
         setLastDocSnap(null);
         setHasMore(false);
+        phraseOffsetRef.current = data.nextOffset || 0;
+        setPhraseHasMore(Boolean(data.interpreted && data.hasMore));
         setIsArticleSearchActive(true);
         return { ok: true, interpreted: Boolean(data.interpreted) };
       }
       setProducts([]);
+      phraseOffsetRef.current = 0;
+      setPhraseHasMore(false);
       setIsArticleSearchActive(false);
       return { ok: false };
     } catch (e) {
@@ -523,6 +536,26 @@ export function usePortalSession() {
       setIsSearchingArticle(false);
     }
   }, [articleSearch]);
+
+  const loadMorePhrase = useCallback(async () => {
+    const article = articleSearch.trim();
+    if (!article || !phraseHasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const { data } = await httpsCallable(functions, 'searchCatalog')({ q: article, offset: phraseOffsetRef.current });
+      const next = data?.products || [];
+      setProducts((cur) => {
+        const seen = new Set(cur.map((item) => item.docId));
+        return [...cur, ...next.filter((item) => item?.docId && !seen.has(item.docId))];
+      });
+      phraseOffsetRef.current = data?.nextOffset || phraseOffsetRef.current;
+      setPhraseHasMore(Boolean(data?.hasMore));
+    } catch (e) {
+      logger.error('Помилка довантаження пошуку:', e);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [articleSearch, isLoadingMore, phraseHasMore]);
 
   const clearArticleSearch = useCallback(() => {
     setArticleSearch('');
@@ -739,8 +772,10 @@ export function usePortalSession() {
     products,
     isFetchingProducts,
     hasMore,
+    phraseHasMore,
     isLoadingMore,
     loadMoreProducts,
+    loadMorePhrase,
     sidebarProductGroups,
     allBrands,
     categories,

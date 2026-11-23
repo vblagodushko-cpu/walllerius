@@ -219,8 +219,17 @@ exports.searchCatalog = onCall(
     }
 
     const cards = await listProductMasterCards();
-    const hits = matchMasterPhrase(cards, q, 20);
-    const products = await productsForMasterHits(productsCol, hits);
-    return { ok: true, products, interpreted: true, count: products.length };
+    const offset = Math.max(0, Math.floor(Number(request.data?.offset) || 0));
+    const page = matchMasterPhrase(cards, q, { limit: 30, offset });
+    const products = await productsForMasterHits(productsCol, page.hits);
+    const nextOffset = offset + page.hits.length;
+    return {
+      ok: true,
+      products,
+      interpreted: true,
+      hasMore: nextOffset < page.total,
+      nextOffset,
+      count: products.length,
+    };
   }
 );
