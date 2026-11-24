@@ -146,7 +146,7 @@ export default function MasterSearchBox({
 
   return (
     <form
-      className={`flex min-w-[16rem] flex-1 items-center gap-2 ${showNew ? 'pt-2' : ''}`}
+      className={`flex min-w-0 flex-1 items-center gap-2 ${showNew ? 'pt-2' : ''}`}
       onSubmit={(event) => {
         event.preventDefault();
         dismissNew();

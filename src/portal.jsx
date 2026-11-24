@@ -347,6 +347,7 @@ function PortalApp() {
   const [brandSearch, setBrandSearch] = useState(""); // Пошук брендів у режимі "Всі бренди"
   /** На мобілці смарт-панель у drawer зліва; на md+ завжди видима в сітці. */
   const [mobileSmartPanelOpen, setMobileSmartPanelOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   /** Вертикальна позиція ручки «Каталог» (px від верху вьюпорту); перетягувати після утримування. */
   const [catalogEdgeTopPx, setCatalogEdgeTopPx] = useState(() => {
@@ -1266,6 +1267,15 @@ function PortalApp() {
   }, [mobileSmartPanelOpen, closeMobileSmartPanel]);
 
   useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
     const onResize = () => {
       setCatalogEdgeTopPx((t) => clampCatalogEdgeTop(t, window.innerHeight));
     };
@@ -1344,7 +1354,7 @@ function PortalApp() {
           <button
             type="button"
             onClick={() => setView('products')}
-            className={`flex h-10 shrink-0 items-center gap-2 rounded-xl px-3 text-sm font-semibold ${
+            className={`hidden h-10 shrink-0 items-center gap-2 rounded-xl px-3 text-sm font-semibold md:flex ${
               view === 'products'
                 ? 'bg-indigo-600 text-white'
                 : 'bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
@@ -1381,7 +1391,19 @@ function PortalApp() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-gray-100 px-3 py-2 md:flex-row md:items-center md:justify-between md:gap-3 md:px-4 md:py-1.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-2 md:gap-3 md:px-4 md:py-1.5">
+          <button
+            type="button"
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-sm font-medium text-gray-800 md:hidden"
+            aria-expanded={mobileMenuOpen}
+            aria-haspopup="dialog"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+            Меню
+          </button>
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
             {hasBalances ? (
               <>
@@ -1393,46 +1415,87 @@ function PortalApp() {
             )}
             {uahRate ? <span className="text-gray-500">курс {Number(uahRate).toFixed(2)}</span> : null}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 md:hidden">
-              <nav className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5" aria-label="Розділи порталу">
-                {sectionBtn('orders', 'Замовлення', true)}
-                {sectionBtn('settlements', 'Звірка', true)}
-                {sectionBtn('profile', 'Профіль', true)}
-              </nav>
-              {logoutBtn(true)}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <a
-                href="https://olimp-auto.biz/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
-              >
-                Сайт запчастин
-              </a>
-              <a
-                href="https://www.fuchs.com/ua/uk/pidbir-olivi/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
-              >
-                Підбір оливи
-              </a>
-              <div className="flex items-center gap-2">
-                {currencySwitch}
-                {cartBtn}
-              </div>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <a
+              href="https://olimp-auto.biz/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50 md:inline-flex"
+            >
+              Сайт запчастин
+            </a>
+            <a
+              href="https://www.fuchs.com/ua/uk/pidbir-olivi/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden whitespace-nowrap rounded-lg border border-indigo-200 bg-white px-2.5 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50 md:inline-flex"
+            >
+              Підбір оливи
+            </a>
+            <div className="flex items-center gap-2">
+              {currencySwitch}
+              {cartBtn}
             </div>
           </div>
         </div>
       </header>
+        {mobileMenuOpen ? (
+          <div className="fixed inset-0 z-[60] md:hidden">
+            <button type="button" className="absolute inset-0 bg-stone-900/40" aria-label="Закрити меню" onClick={() => setMobileMenuOpen(false)} />
+            <div role="dialog" aria-label="Меню порталу" className="absolute inset-x-3 top-3 rounded-2xl bg-white p-2 shadow-xl">
+              <button
+                type="button"
+                className="block w-full rounded-xl px-3 py-3 text-left text-sm font-medium text-gray-900 hover:bg-gray-50"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setView('products');
+                  setMobileSmartPanelOpen(true);
+                }}
+              >
+                Каталог
+              </button>
+              {[
+                ['orders', 'Замовлення'],
+                ['settlements', 'Звірка'],
+                ['profile', 'Профіль'],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`block w-full rounded-xl px-3 py-3 text-left text-sm font-medium hover:bg-gray-50 ${view === id ? 'text-indigo-700' : 'text-gray-900'}`}
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setView(id);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+              <a href="https://olimp-auto.biz/" target="_blank" rel="noopener noreferrer" className="block rounded-xl px-3 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-50" onClick={() => setMobileMenuOpen(false)}>
+                Сайт запчастин
+              </a>
+              <a href="https://www.fuchs.com/ua/uk/pidbir-olivi/" target="_blank" rel="noopener noreferrer" className="block rounded-xl px-3 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-50" onClick={() => setMobileMenuOpen(false)}>
+                Підбір оливи
+              </a>
+              <button
+                type="button"
+                className="block w-full rounded-xl px-3 py-3 text-left text-sm font-medium text-rose-700 hover:bg-rose-50"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  logout();
+                }}
+              >
+                Вийти
+              </button>
+            </div>
+          </div>
+        ) : null}
 
       <div className="max-w-7xl mx-auto">
         {view === 'products' && (
           <>
           <PortalNewsNotice />
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-2">
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-stone-200 bg-white py-2 pl-11 pr-3 md:px-3">
             <FilterToggle
               checked={showOnlyInStock}
               onChange={(value) => {
