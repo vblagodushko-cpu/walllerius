@@ -7,6 +7,7 @@ import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import usePagedQuery from "../hooks/usePagedQuery";
 import PaginatorButton from "../components/PaginatorButton.jsx";
+import { useClientSearch } from "../hooks/useClientSearch.js";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -502,15 +503,41 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
   );
 }
 
+function orderMatchesStatus(order, statusFilter) {
+  if (statusFilter === "archived") return order.archived === true;
+  if (order.archived === true) return false;
+  const status = order.status || "Нове";
+  if (statusFilter === "new") return status === "Нове";
+  if (statusFilter === "partial") return status === "Частково виконано";
+  if (statusFilter === "completed") return status === "Завершено";
+  return true;
+}
+
 /* --------------------------------- Page ---------------------------------- */
 export default function OrdersPage({ setStatus: globalSetStatus }) {
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "new" | "partial" | "completed" | "archived"
   const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('adminSelectedCurrency') || 'EUR');
   const [uahRate, setUahRate] = useState(null);
+  const [clientFilter, setClientFilter] = useState(null);
+  const {
+    searchQuery: clientSearch,
+    setSearchQuery: setClientSearch,
+    filteredClients: clientSearchResults,
+    loading: searchingClients,
+    loadAllClients,
+  } = useClientSearch({ debounceMs: 400, maxResults: 8, autoLoad: false });
   
   const qFactory = useCallback(
     (...mods) => {
       const baseQuery = collection(db, `/artifacts/${appId}/public/data/orders`);
+      if (clientFilter?.id) {
+        return query(
+          baseQuery,
+          where("clientId", "==", clientFilter.id),
+          orderBy("createdAt", "desc"),
+          ...mods
+        );
+      }
       const conditions = [];
       
       if (statusFilter === "new") {
@@ -533,10 +560,14 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
       conditions.push(orderBy("createdAt", "desc"));
       return query(baseQuery, ...conditions, ...mods);
     },
-    [statusFilter]
+    [statusFilter, clientFilter]
   );
 
   const pager = usePagedQuery(qFactory, 20);
+  const visibleOrders = useMemo(
+    () => (clientFilter?.id ? pager.items.filter((order) => orderMatchesStatus(order, statusFilter)) : pager.items),
+    [pager.items, clientFilter, statusFilter]
+  );
   const [modalOrder, setModalOrder] = useState(null);
   const [status, setStatus] = useState(null);
 
@@ -607,6 +638,59 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
         </label>
       </div>
 
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[16rem] flex-1">
+          <input
+            className="w-full rounded-lg border px-3 py-2 text-sm"
+            placeholder="Клієнт: назва, код або телефон"
+            value={clientSearch}
+            onFocus={() => loadAllClients()}
+            onChange={(e) => {
+              setClientSearch(e.target.value);
+              loadAllClients();
+            }}
+          />
+          {clientSearch.trim() && clientSearchResults.length > 0 ? (
+            <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border bg-white shadow-lg">
+              {clientSearchResults.map((client) => (
+                <button
+                  key={client.id}
+                  type="button"
+                  className="block w-full border-b px-3 py-2 text-left last:border-b-0 hover:bg-gray-100"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setClientFilter({ id: client.id, name: client.name || client.id });
+                    setClientSearch("");
+                  }}
+                >
+                  <div className="text-sm font-medium">{client.name || client.id}</div>
+                  <div className="text-xs text-gray-500">{client.id}{client.phone ? ` · ${client.phone}` : ""}</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {clientSearch.trim() && !searchingClients && clientSearchResults.length === 0 ? (
+            <div className="absolute z-20 mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-500 shadow-lg">
+              Клієнта не знайдено
+            </div>
+          ) : null}
+        </div>
+        {clientFilter ? (
+          <div className="flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
+            <span className="text-sm font-medium text-indigo-800">{clientFilter.name}</span>
+            <span className="text-xs text-indigo-600">{clientFilter.id}</span>
+            <button
+              type="button"
+              className="text-lg font-bold leading-none text-indigo-700 hover:text-indigo-900"
+              title="Показати всіх клієнтів"
+              onClick={() => setClientFilter(null)}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+      </div>
+
       {/* Status filters */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <button
@@ -674,7 +758,7 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
             </tr>
           </thead>
           <tbody>
-            {pager.items.map((o) => (
+            {visibleOrders.map((o) => (
               <tr
                 key={o.id}
                 className="border-t hover:bg-slate-50 cursor-pointer"
@@ -712,10 +796,14 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
                 </td>
               </tr>
             ))}
-            {!pager.items.length && (
+            {!visibleOrders.length && (
               <tr>
                 <td className="p-6 text-center text-slate-400" colSpan={6}>
-                  Немає замовлень.
+                  {clientFilter
+                    ? (pager.items.length && !pager.exhausted
+                      ? "На цій порції немає таких замовлень. Натисніть «Показати ще»."
+                      : "У цього клієнта немає замовлень за цим фільтром.")
+                    : "Немає замовлень."}
                 </td>
               </tr>
             )}
