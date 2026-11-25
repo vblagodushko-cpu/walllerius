@@ -518,22 +518,36 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "new" | "partial" | "completed" | "archived"
   const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('adminSelectedCurrency') || 'EUR');
   const [uahRate, setUahRate] = useState(null);
-  const [clientFilter, setClientFilter] = useState(null);
   const {
     searchQuery: clientSearch,
     setSearchQuery: setClientSearch,
-    filteredClients: clientSearchResults,
+    appliedQuery,
+    allClientsCache,
     loading: searchingClients,
     loadAllClients,
-  } = useClientSearch({ debounceMs: 400, maxResults: 8, autoLoad: false });
-  
+  } = useClientSearch({ debounceMs: 400, maxResults: null, autoLoad: false });
+  const clientNameQuery = appliedQuery.trim().toLowerCase();
+  const matchedClients = useMemo(() => {
+    if (clientNameQuery.length < 2 || !allClientsCache) return null;
+    return allClientsCache.filter((client) => (client.name || "").toLowerCase().includes(clientNameQuery));
+  }, [clientNameQuery, allClientsCache]);
+  const nameFilterActive = clientNameQuery.length >= 2;
+  const tooManyClients = Boolean(matchedClients && matchedClients.length > 30);
+  const matchedIdsKey = matchedClients && !tooManyClients
+    ? matchedClients.map((client) => client.id).sort().join("\n")
+    : "";
+
   const qFactory = useCallback(
     (...mods) => {
       const baseQuery = collection(db, `/artifacts/${appId}/public/data/orders`);
-      if (clientFilter?.id) {
+      if (nameFilterActive) {
+        const ids = matchedIdsKey ? matchedIdsKey.split("\n") : [];
+        if (!ids.length) {
+          return query(baseQuery, where("clientId", "==", "__no_client__"), orderBy("createdAt", "desc"), ...mods);
+        }
         return query(
           baseQuery,
-          where("clientId", "==", clientFilter.id),
+          where("clientId", "in", ids),
           orderBy("createdAt", "desc"),
           ...mods
         );
@@ -560,13 +574,13 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
       conditions.push(orderBy("createdAt", "desc"));
       return query(baseQuery, ...conditions, ...mods);
     },
-    [statusFilter, clientFilter]
+    [statusFilter, nameFilterActive, matchedIdsKey]
   );
 
   const pager = usePagedQuery(qFactory, 20);
   const visibleOrders = useMemo(
-    () => (clientFilter?.id ? pager.items.filter((order) => orderMatchesStatus(order, statusFilter)) : pager.items),
-    [pager.items, clientFilter, statusFilter]
+    () => (nameFilterActive ? pager.items.filter((order) => orderMatchesStatus(order, statusFilter)) : pager.items),
+    [pager.items, nameFilterActive, statusFilter]
   );
   const [modalOrder, setModalOrder] = useState(null);
   const [status, setStatus] = useState(null);
@@ -638,11 +652,11 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
         </label>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[16rem] flex-1">
+      <div className="mb-4">
+        <div className="flex min-w-[16rem] max-w-md items-center gap-2">
           <input
             className="w-full rounded-lg border px-3 py-2 text-sm"
-            placeholder="Клієнт: назва, код або телефон"
+            placeholder="Назва клієнта"
             value={clientSearch}
             onFocus={() => loadAllClients()}
             onChange={(e) => {
@@ -650,44 +664,28 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
               loadAllClients();
             }}
           />
-          {clientSearch.trim() && clientSearchResults.length > 0 ? (
-            <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border bg-white shadow-lg">
-              {clientSearchResults.map((client) => (
-                <button
-                  key={client.id}
-                  type="button"
-                  className="block w-full border-b px-3 py-2 text-left last:border-b-0 hover:bg-gray-100"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setClientFilter({ id: client.id, name: client.name || client.id });
-                    setClientSearch("");
-                  }}
-                >
-                  <div className="text-sm font-medium">{client.name || client.id}</div>
-                  <div className="text-xs text-gray-500">{client.id}{client.phone ? ` · ${client.phone}` : ""}</div>
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {clientSearch.trim() && !searchingClients && clientSearchResults.length === 0 ? (
-            <div className="absolute z-20 mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-500 shadow-lg">
-              Клієнта не знайдено
-            </div>
-          ) : null}
-        </div>
-        {clientFilter ? (
-          <div className="flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
-            <span className="text-sm font-medium text-indigo-800">{clientFilter.name}</span>
-            <span className="text-xs text-indigo-600">{clientFilter.id}</span>
+          {clientSearch ? (
             <button
               type="button"
-              className="text-lg font-bold leading-none text-indigo-700 hover:text-indigo-900"
-              title="Показати всіх клієнтів"
-              onClick={() => setClientFilter(null)}
+              className="shrink-0 rounded-lg px-2 py-2 text-sm text-gray-600 hover:bg-gray-100"
+              onClick={() => setClientSearch("")}
             >
-              ×
+              Скинути
             </button>
-          </div>
+          ) : null}
+        </div>
+        {nameFilterActive ? (
+          <p className="mt-1 text-xs text-gray-500">
+            {searchingClients || !allClientsCache
+              ? "Шукаємо клієнтів…"
+              : tooManyClients
+                ? `Збігів ${matchedClients.length}. Уточніть назву, щоб побачити замовлення.`
+                : matchedClients.length
+                  ? `Клієнтів: ${matchedClients.length}`
+                  : "Клієнта з такою назвою немає"}
+          </p>
+        ) : clientSearch.trim() ? (
+          <p className="mt-1 text-xs text-gray-500">Введіть ще літеру</p>
         ) : null}
       </div>
 
@@ -799,10 +797,12 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
             {!visibleOrders.length && (
               <tr>
                 <td className="p-6 text-center text-slate-400" colSpan={6}>
-                  {clientFilter
-                    ? (pager.items.length && !pager.exhausted
-                      ? "На цій порції немає таких замовлень. Натисніть «Показати ще»."
-                      : "У цього клієнта немає замовлень за цим фільтром.")
+                  {nameFilterActive
+                    ? (tooManyClients
+                      ? "Уточніть назву клієнта."
+                      : pager.items.length && !pager.exhausted
+                        ? "На цій порції немає таких замовлень. Натисніть «Показати ще»."
+                        : "Замовлень із такою назвою клієнта немає.")
                     : "Немає замовлень."}
                 </td>
               </tr>
