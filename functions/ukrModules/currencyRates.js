@@ -65,14 +65,18 @@ async function applyRate(rate, sourceFile) {
     {
       rate,
       updatedAt: FieldValue.serverTimestamp(),
+      source: "agent",
       sourceFile: sourceFile || "agent",
       lastSyncTime: FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
 
-  // Прапорець: розклад currencyRatesSync з Drive більше не перезаписує курс
-  await syncStateRef.set({ currencySource: "agent" }, { merge: true });
+  // Обидві назви: агент пише currencyRatesSource, раніший код — currencySource.
+  await syncStateRef.set(
+    { currencySource: "agent", currencyRatesSource: "agent" },
+    { merge: true }
+  );
 
   logger.info("currencyRates from agent", { rate, previous, sourceFile });
   return { rate, previous, updated: previous == null || Math.abs(previous - rate) >= 1e-9 };
