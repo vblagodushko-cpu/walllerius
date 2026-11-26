@@ -497,6 +497,12 @@ exports.currencyRatesSync = onSchedule(
   },
   async () => {
     try {
+      // Якщо курс пише локальний агент (ukrIngest/currencyRates) — Drive CSV не чіпаємо
+      const stateSnap = await db.doc(`/artifacts/${APP_ID}/public/meta/syncState/syncState`).get();
+      if (stateSnap.exists && stateSnap.data().currencySource === "agent") {
+        logger.info("currencyRatesSync: пропущено - курс синхронізує локальний агент (currencySource=agent)");
+        return;
+      }
       await syncCurrencyRates(false);
     } catch (e) {
       logger.error("currencyRatesSync error:", e);
