@@ -1192,23 +1192,7 @@ exports.placeOrderV2 = onCall({
     });
   });
 
-  // Update order counts (status is "Нове")
-  const orderCountsRef = db.doc(`/artifacts/${APP_ID}/public/meta/counters/orderCounts`);
-  try {
-    await db.runTransaction(async (tx) => {
-      const countsSnap = await tx.get(orderCountsRef);
-      const current = countsSnap.exists ? countsSnap.data() : { new: 0, partial: 0 };
-      tx.set(orderCountsRef, {
-        new: (current.new || 0) + 1,
-        partial: current.partial || 0,
-        lastUpdated: FieldValue.serverTimestamp(),
-      }, { merge: true });
-    });
-  } catch (e) {
-    logger.warn("Failed to update order counts", e);
-    // Не блокуємо створення замовлення при помилці підрахунку
-  }
-
+  // Бейджі перераховує onOrderCountsSync після запису документа.
   logger.info("placeOrderV2 created", { orderId: ref.id, items: items.length, total });
   return { orderId: ref.id, orderNumber, total };
 });
@@ -2098,6 +2082,7 @@ try { Object.assign(exports, require("./adminExport")); } catch (e) { logger.war
 try { Object.assign(exports, require("./aiEnrichment")); } catch (e) { logger.warn("aiEnrichment module not found", String(e)); }
 try { Object.assign(exports, require("./masterDataExcel")); } catch (e) { logger.warn("masterDataExcel module not found", String(e)); }
 try { Object.assign(exports, require("./ukrIngest")); } catch (e) { logger.warn("ukrIngest module not found", String(e)); }
+try { exports.onOrderCountsSync = require("./orderCounts").onOrderCountsSync; } catch (e) { logger.warn("orderCounts module not found", String(e)); }
 try { Object.assign(exports, require("./accounting")); } catch (e) { logger.warn("accounting module not found", String(e)); }
 try { Object.assign(exports, require("./accountants")); } catch (e) { logger.warn("accountants module not found", String(e)); }
 try {

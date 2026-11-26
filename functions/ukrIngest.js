@@ -8,6 +8,16 @@ const crypto = require("crypto");
 const { FieldValue } = require("firebase-admin/firestore");
 const { db, APP_ID } = require("./shared");
 const { modules } = require("./ukrModules");
+const currencyRates = require("./ukrModules/currencyRates");
+
+const MODULE_ALIASES = {
+  currency: "currencyRates",
+  currencies: "currencyRates",
+  currencyRate: "currencyRates",
+  valuta: "currencyRates",
+  kurs: "currencyRates",
+  rates: "currencyRates",
+};
 
 const REGION = process.env.FUNCTION_REGION || "europe-central2";
 const UKR_AGENT_TOKEN = defineSecret("UKR_AGENT_TOKEN");
@@ -37,8 +47,27 @@ exports.ukrIngest = onRequest(
     }
 
     const body = req.body || {};
-    const mod = modules[String(body.module || "")];
+    const moduleName = String(body.module || "");
+    const item0 = Array.isArray(body.items) ? body.items[0] : null;
+    logger.info("ukrIngest request", {
+      module: moduleName.slice(0, 40),
+      keys: Object.keys(body).slice(0, 20),
+      itemKeys: item0 && typeof item0 === "object" ? Object.keys(item0).slice(0, 30) : [],
+      size: Array.isArray(body.items) ? body.items.length : null,
+    });
+
+    const envelopeRate = currencyRates.rateFromEnvelope(body);
+    if (envelopeRate) {
+      try {
+        await currencyRates.applyRate(envelopeRate, "agent-envelope");
+      } catch (e) {
+        logger.warn("ukrIngest currency envelope failed", { message: e.message });
+      }
+    }
+
+    const mod = modules[MODULE_ALIASES[moduleName] || moduleName];
     if (!mod) {
+      logger.warn("ukrIngest unknown module", { module: moduleName.slice(0, 40) });
       res.status(400).json({ ok: false, error: "invalid_request" });
       return;
     }
