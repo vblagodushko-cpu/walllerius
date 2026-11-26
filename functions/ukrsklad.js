@@ -411,9 +411,9 @@ async function performUkrSkladSync(forceSync = false) {
 }
 
 // --------- currency rates sync ----------
-async function syncCurrencyRates() {
+async function syncCurrencyRates(force = false) {
   try {
-    logger.info("Starting currency rates sync...");
+    logger.info("Starting currency rates sync...", { force: !!force });
     
     const FOLDER_ID = "1iAKEi_ixZYwxz18t2BrFoOw85maFCclP";
     const FILENAME = "currency.csv";
@@ -433,23 +433,13 @@ async function syncCurrencyRates() {
     
     if (!res.data.files || res.data.files.length === 0) {
       logger.warn(`Currency sync: File '${FILENAME}' not found on Google Drive.`);
-      return;
+      return { success: false, message: `Файл ${FILENAME} не знайдено` };
     }
     
     const driveFile = res.data.files[0];
     const driveFileModifiedTime = new Date(driveFile.modifiedTime);
     
-    // 2) Перевіряємо, чи новіший файл
-    const currencyRatesSnap = await currencyRatesRef.get();
-    if (currencyRatesSnap.exists) {
-      const lastSyncTime = currencyRatesSnap.data().lastSyncTime?.toDate();
-      if (lastSyncTime && driveFileModifiedTime <= lastSyncTime) {
-        logger.info(`Skipping currency sync. File '${FILENAME}' is not new.`);
-        return { skipped: true };
-      }
-    }
-    
-    // 3) Читаємо CSV (cp1251, ';')
+    // 2) Читаємо CSV (cp1251, ';') — щодня, навіть якщо mtime на Drive не змінився
     const contentResp = await drive.files.get(
       { fileId: driveFile.id, alt: "media" },
       { responseType: "arraybuffer" }
@@ -461,20 +451,27 @@ async function syncCurrencyRates() {
       skipEmptyLines: true,
     });
     
-    // 4) Знаходимо рядок з id=2 (UAH) та беремо rate
+    // 3) Знаходимо рядок з id=2 (UAH) та беремо rate
     const uahRow = parsedCsv.data.find(row => String(row.id || "").trim() === "2");
     if (!uahRow || !uahRow.rate) {
       logger.warn("Currency sync: UAH row (id=2) not found or rate is missing.");
-      return;
+      return { success: false, message: "У CSV немає рядка UAH (id=2)" };
     }
     
     const rate = num(uahRow.rate);
     if (!rate || rate <= 0) {
       logger.warn(`Currency sync: Invalid rate value: ${uahRow.rate}`);
-      return;
+      return { success: false, message: `Некоректний курс: ${uahRow.rate}` };
+    }
+
+    const currencyRatesSnap = await currencyRatesRef.get();
+    const previous = currencyRatesSnap.exists ? Number(currencyRatesSnap.data().rate) || null : null;
+    if (!force && previous != null && Math.abs(previous - rate) < 1e-9) {
+      logger.info(`Currency sync: rate unchanged (${rate}).`);
+      return { skipped: true, rate, previous };
     }
     
-    // 5) Зберігаємо курс в Firestore
+    // 4) Зберігаємо курс в Firestore
     await currencyRatesRef.set({
       rate: rate,
       updatedAt: FieldValue.serverTimestamp(),
@@ -482,8 +479,8 @@ async function syncCurrencyRates() {
       lastSyncTime: driveFileModifiedTime,
     }, { merge: true });
     
-    logger.info(`Currency sync finished. UAH to EUR rate: ${rate}`);
-    return { success: true, rate };
+    logger.info(`Currency sync finished. UAH to EUR rate: ${rate}`, { previous });
+    return { success: true, rate, previous };
   } catch (e) {
     logger.error("Currency sync error:", e);
     throw e;
@@ -500,9 +497,29 @@ exports.currencyRatesSync = onSchedule(
   },
   async () => {
     try {
-      await syncCurrencyRates();
+      await syncCurrencyRates(false);
     } catch (e) {
       logger.error("currencyRatesSync error:", e);
+    }
+  }
+);
+
+exports.triggerCurrencyRatesSync = onCall(
+  {
+    region: REGION,
+    cors: true,
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (request) => {
+    if (!request.auth?.token?.admin) {
+      throw new HttpsError("permission-denied", "Тільки для адмінів");
+    }
+    try {
+      return await syncCurrencyRates(request.data?.force !== false);
+    } catch (e) {
+      logger.error("Manual currency sync error:", e);
+      throw new HttpsError("internal", e.message || "Помилка синхронізації курсу");
     }
   }
 );

@@ -16,6 +16,7 @@ import OrdersExportPage from "./pages/OrdersExportPage.jsx";
 import SecurityPage from "./pages/SecurityPage.jsx";
 import AdminLogin from "./components/AdminLogin.jsx";
 import { logger } from "../utils/logger.js";
+import { recountOrderBadges } from "./utils/orderCounts.js";
 
 function Placeholder({ title }) {
   return (
@@ -90,6 +91,11 @@ export default function AdminApp() {
         setOrderCounts({ new: 0, partial: 0 });
       }
     );
+
+    // Перерахунок з реальних замовлень: лічильник інколи роз’їжджається після «Замовлено у постачальника»
+    recountOrderBadges()
+      .then((next) => setOrderCounts(next))
+      .catch((error) => logger.warn("Failed to recount order badges", error));
     
     return () => unsubscribe();
   }, [user]);
@@ -206,7 +212,19 @@ export default function AdminApp() {
 
       {/* Тут підміняємо сторінки, яким треба setStatus */}
       {current.key === "orders"
-        ? <OrdersPage setStatus={setStatus} />
+        ? (
+          <OrdersPage
+            setStatus={setStatus}
+            onOrderCountsChange={(next) => {
+              if (next) setOrderCounts(next);
+              else {
+                recountOrderBadges()
+                  .then((counts) => setOrderCounts(counts))
+                  .catch((error) => logger.warn("Failed to recount order badges", error));
+              }
+            }}
+          />
+        )
         : current.key === "purchases"
         ? <PurchasesPage setStatus={setStatus} />
         : current.key === "ordersExport"

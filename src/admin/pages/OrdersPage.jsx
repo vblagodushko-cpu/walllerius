@@ -1,13 +1,14 @@
 // src/admin/pages/OrdersPage.jsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  collection, orderBy, query, doc, updateDoc, limit, startAfter, runTransaction, where, getDoc,
+  collection, orderBy, query, doc, updateDoc, limit, startAfter, where, getDoc,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../firebase-config";
 import usePagedQuery from "../hooks/usePagedQuery";
 import PaginatorButton from "../components/PaginatorButton.jsx";
 import { useClientSearch } from "../hooks/useClientSearch.js";
+import { recountOrderBadges } from "../utils/orderCounts.js";
 
 const appId = import.meta.env.VITE_PROJECT_ID;
 if (!appId) {
@@ -31,7 +32,7 @@ function Modal({ title, onClose, children }) {
 }
 
 /* ------------------------- Order processing modal ------------------------ */
-function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurrency = 'EUR', uahRate = null }) {
+function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurrency = 'EUR', uahRate = null, onOrderCountsChange = null }) {
   const [items, setItems] = useState(() =>
     (order.items || []).map((it) => ({
       ...it,
@@ -174,46 +175,22 @@ function OrderProcessingModal({ order, onClose, onSaved, setStatus, selectedCurr
         `/artifacts/${appId}/public/data/orders`,
         order.id
       );
-      const oldStatus = order.status || "Нове";
       const { status: newStatus, hasCancellations } = calcOverallStatus(items);
       
-      // Update order
-      await updateDoc(orderRef, { items, status: newStatus, hasCancellations });
-      
-      // Update order counts if status changed
-      if (oldStatus !== newStatus) {
-        const orderCountsRef = doc(db, `/artifacts/${appId}/public/meta/counters/orderCounts`);
-        try {
-          await runTransaction(db, async (tx) => {
-            const countsSnap = await tx.get(orderCountsRef);
-            const current = countsSnap.exists ? countsSnap.data() : { new: 0, partial: 0 };
-            let newCount = Number(current.new) || 0;
-            let partialCount = Number(current.partial) || 0;
-            
-            // Decrease old status
-            if (oldStatus === "Нове") {
-              newCount = Math.max(0, newCount - 1);
-            } else if (oldStatus === "Частково виконано") {
-              partialCount = Math.max(0, partialCount - 1);
-            }
-            
-            // Increase new status
-            if (newStatus === "Нове") {
-              newCount = newCount + 1;
-            } else if (newStatus === "Частково виконано") {
-              partialCount = partialCount + 1;
-            }
-            
-            tx.set(orderCountsRef, {
-              new: newCount,
-              partial: partialCount,
-              lastUpdated: new Date(),
-            }, { merge: true });
-          });
-        } catch (e) {
-          console.warn("Failed to update order counts", e);
-          // Не блокуємо оновлення замовлення при помилці підрахунку
-        }
+      // Update order — archived завжди явний, інакше where(archived==false) його не бачить
+      await updateDoc(orderRef, {
+        items,
+        status: newStatus,
+        hasCancellations,
+        archived: order.archived === true,
+      });
+
+      try {
+        const counts = await recountOrderBadges();
+        onOrderCountsChange?.(counts);
+      } catch (e) {
+        console.warn("Failed to recount order badges", e);
+        onOrderCountsChange?.(null);
       }
       
       setStatus?.({
@@ -514,7 +491,7 @@ function orderMatchesStatus(order, statusFilter) {
 }
 
 /* --------------------------------- Page ---------------------------------- */
-export default function OrdersPage({ setStatus: globalSetStatus }) {
+export default function OrdersPage({ setStatus: globalSetStatus, onOrderCountsChange = null }) {
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "new" | "partial" | "completed" | "archived"
   const [selectedCurrency, setSelectedCurrency] = useState(() => localStorage.getItem('adminSelectedCurrency') || 'EUR');
   const [uahRate, setUahRate] = useState(null);
@@ -825,6 +802,7 @@ export default function OrdersPage({ setStatus: globalSetStatus }) {
           setStatus={globalSetStatus ?? setStatus}
           selectedCurrency={selectedCurrency}
           uahRate={uahRate}
+          onOrderCountsChange={onOrderCountsChange}
         />
       )}
     </div>
