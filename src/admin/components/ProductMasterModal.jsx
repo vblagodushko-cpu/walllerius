@@ -12,12 +12,15 @@ import {
   getImageFileFromClipboard,
 } from "../../utils/productImage";
 import {
-  TOLERANCE_FILTER_PROFILES,
   TOLERANCE_SYSTEMS,
   buildToleranceTag,
   formatToleranceTags,
   normalizeToleranceTagsInput,
+  toleranceChoiceCategory,
+  toleranceFilterChoices,
+  toleranceSystemsForCategories,
 } from "../../utils/tolerances.js";
+import { systemsForFilter } from "../../utils/catalogFilters.js";
 import {
   VISCOSITY_SYSTEMS,
   buildViscosityTag,
@@ -45,6 +48,150 @@ const AI_SUGGEST_FIELD_LABELS = {
   synonyms: "Синоніми",
   detailBody: "Детальний опис",
 };
+
+function systemLabelHit(system, query) {
+  if (!query) return true;
+  return system.includes(query) || String(TOLERANCE_SYSTEMS[system]?.label || "").toUpperCase().includes(query);
+}
+
+function choiceHit(choice, query) {
+  if (!query) return true;
+  return (
+    choice.label.toUpperCase().includes(query) ||
+    choice.id.toUpperCase().includes(query) ||
+    choice.codes.some((code) => String(code).toUpperCase().includes(query))
+  );
+}
+
+function systemMatchesQuery(system, category, query) {
+  if (!query) return true;
+  if (systemLabelHit(system, query)) return true;
+  return toleranceFilterChoices(system, category).some((choice) => choiceHit(choice, query));
+}
+
+function TolerancePicker({ categories, tagsText, onChangeText }) {
+  const [search, setSearch] = useState("");
+  const [system, setSystem] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const selected = useMemo(() => normalizeToleranceTagsInput(tagsText), [tagsText]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const preferred = useMemo(() => toleranceSystemsForCategories(categories), [categories]);
+  const choiceCategory = useMemo(() => toleranceChoiceCategory(categories), [categories]);
+  const query = search.trim().toUpperCase();
+  const view = systemsForFilter(TOLERANCE_SYSTEMS, preferred.length ? preferred : null, {
+    expanded: expanded || Boolean(query),
+    activeSystem: system,
+  });
+  const systems = query ? view.systems.filter((id) => systemMatchesQuery(id, choiceCategory, query)) : view.systems;
+  const pick = systems.includes(system) ? system : systems[0] || "";
+  const showAllCodes = !query || systemLabelHit(pick, query);
+  const choices = pick
+    ? toleranceFilterChoices(pick, choiceCategory).filter((choice) => showAllCodes || choiceHit(choice, query))
+    : [];
+
+  const setTags = (next) => onChangeText(formatToleranceTags(Array.from(next)));
+
+  const toggleChoice = (choice) => {
+    const tags = choice.codes.map((code) => buildToleranceTag(pick, code));
+    const next = new Set(selected);
+    const allOn = tags.every((tag) => next.has(tag));
+    tags.forEach((tag) => {
+      if (allOn) next.delete(tag);
+      else next.add(tag);
+    });
+    setTags(next);
+  };
+
+  const removeTag = (tag) => {
+    const next = new Set(selected);
+    next.delete(tag);
+    setTags(next);
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+      {selected.length ? (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {selected.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-xs text-indigo-800 hover:bg-indigo-100"
+              onClick={() => removeTag(tag)}
+            >
+              {tag.replace(":", " ")}
+              <span aria-hidden="true">×</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <input
+        className="mb-3 w-full sm:w-64 rounded-lg border bg-white px-3 py-2 text-sm"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Пошук: C3, 229.52, VW..."
+      />
+      <div className="flex flex-wrap gap-1.5">
+        {systems.map((id) => {
+          const count = selected.filter((tag) => tag.startsWith(`${id}:`)).length;
+          const active = id === pick;
+          return (
+            <button
+              key={id}
+              type="button"
+              title={TOLERANCE_SYSTEMS[id]?.label || id}
+              className={`rounded-lg px-2 py-1 text-xs font-medium ${
+                active ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+              onClick={() => setSystem(id)}
+            >
+              {id}
+              {count ? ` ${count}` : ""}
+            </button>
+          );
+        })}
+        {view.hasMore && !query ? (
+          <button
+            type="button"
+            className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "менше" : "ще"}
+          </button>
+        ) : null}
+      </div>
+      {choices.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {choices.map((choice) => {
+            const tags = choice.codes.map((code) => buildToleranceTag(pick, code));
+            const onCount = tags.filter((tag) => selectedSet.has(tag)).length;
+            const allOn = onCount === tags.length;
+            const partial = onCount > 0 && !allOn;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                title={choice.title || choice.codes.join(", ")}
+                className={`rounded-full border px-2.5 py-1 text-sm ${
+                  allOn
+                    ? "border-indigo-700 bg-indigo-700 text-white"
+                    : partial
+                      ? "border-indigo-400 bg-indigo-50 text-indigo-800"
+                      : "border-slate-200 bg-white text-slate-700 hover:border-indigo-300"
+                }`}
+                onClick={() => toggleChoice(choice)}
+              >
+                {choice.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">Немає допусків за цим запитом.</p>
+      )}
+    </div>
+  );
+}
 
 function splitTextList(value) {
   return String(value || "")
@@ -103,7 +250,6 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
   const [pendingImagePreview, setPendingImagePreview] = useState("");
   const [pendingImageFile, setPendingImageFile] = useState(null);
   const [removeDetailImage, setRemoveDetailImage] = useState(false);
-  const [toleranceSearch, setToleranceSearch] = useState("");
   const [viscositySearch, setViscositySearch] = useState("");
   const [masterModalTab, setMasterModalTab] = useState("main");
   const [categoriesList, setCategoriesList] = useState([]);
@@ -340,39 +486,12 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
     () => normalizeToleranceTagsInput(masterForm.toleranceTagsText),
     [masterForm.toleranceTagsText]
   );
-  const selectedToleranceTagSet = useMemo(() => new Set(selectedToleranceTags), [selectedToleranceTags]);
   const selectedViscosityTags = useMemo(
     () => normalizeViscosityTagsInput(masterForm.viscosityTagsText),
     [masterForm.viscosityTagsText]
   );
   const selectedViscosityTagSet = useMemo(() => new Set(selectedViscosityTags), [selectedViscosityTags]);
   const specsTagsCount = selectedToleranceTags.length + selectedViscosityTags.length;
-
-  const visibleToleranceSystems = useMemo(() => {
-    const preferred = [];
-    masterForm.categories.forEach((category) => {
-      const profile = TOLERANCE_FILTER_PROFILES[category];
-      if (Array.isArray(profile)) preferred.push(...profile);
-    });
-    const q = toleranceSearch.trim().toUpperCase();
-    return [...new Set([...preferred, ...Object.keys(TOLERANCE_SYSTEMS)])]
-      .filter((system) => TOLERANCE_SYSTEMS[system])
-      .map((system) => {
-        const cfg = TOLERANCE_SYSTEMS[system];
-        const options = cfg.options
-          .map((code) => ({ code, tag: buildToleranceTag(system, code) }))
-          .filter(
-            ({ code, tag }) =>
-              !q ||
-              system.includes(q) ||
-              String(cfg.label || "").toUpperCase().includes(q) ||
-              code.toUpperCase().includes(q) ||
-              tag.includes(q)
-          );
-        return { system, ...cfg, options };
-      })
-      .filter((cfg) => cfg.options.length > 0);
-  }, [toleranceSearch, masterForm.categories]);
 
   const visibleViscositySystems = useMemo(() => {
     const preferred = [];
@@ -400,14 +519,6 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
       .filter((cfg) => cfg.options.length > 0);
   }, [viscositySearch, masterForm.categories]);
 
-  const toggleToleranceTag = (tag) => {
-    setMasterForm((prev) => {
-      const next = new Set(normalizeToleranceTagsInput(prev.toleranceTagsText));
-      if (next.has(tag)) next.delete(tag);
-      else next.add(tag);
-      return { ...prev, toleranceTagsText: formatToleranceTags(Array.from(next)) };
-    });
-  };
   const toggleViscosityTag = (tag) => {
     setMasterForm((prev) => {
       const next = new Set(normalizeViscosityTagsInput(prev.viscosityTagsText));
@@ -826,48 +937,22 @@ export default function ProductMasterModal({ product, onClose, onSaved, onStatus
                   onChange={(e) => setMasterForm((prev) => ({ ...prev, tolerances: e.target.value }))}
                 />
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <input
-                  className="w-full sm:w-64 px-3 py-2 border rounded-lg bg-white text-sm mb-3"
-                  value={toleranceSearch}
-                  onChange={(e) => setToleranceSearch(e.target.value)}
-                  placeholder="Пошук: C3, 229.52, VW..."
-                />
-                <div className="max-h-72 overflow-auto space-y-3 pr-1">
-                  {visibleToleranceSystems.map((cfg) => (
-                    <div key={cfg.system} className="rounded-lg border bg-white p-2">
-                      <div className="mb-2 text-xs font-semibold text-slate-700">{cfg.label || cfg.system}</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {cfg.options.map(({ code, tag }) => {
-                          const checked = selectedToleranceTagSet.has(tag);
-                          return (
-                            <label
-                              key={tag}
-                              className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs cursor-pointer ${
-                                checked ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-slate-50"
-                              }`}
-                            >
-                              <input type="checkbox" className="h-3 w-3" checked={checked} onChange={() => toggleToleranceTag(tag)} />
-                              <span>{code}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <textarea
-                  className="mt-3 w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
-                  value={masterForm.toleranceTagsText}
-                  onChange={(e) => setMasterForm((prev) => ({ ...prev, toleranceTagsText: e.target.value }))}
-                  onBlur={() =>
-                    setMasterForm((prev) => ({
-                      ...prev,
-                      toleranceTagsText: formatToleranceTags(normalizeToleranceTagsInput(prev.toleranceTagsText)),
-                    }))
-                  }
-                />
-              </div>
+              <TolerancePicker
+                categories={masterForm.categories}
+                tagsText={masterForm.toleranceTagsText}
+                onChangeText={(toleranceTagsText) => setMasterForm((prev) => ({ ...prev, toleranceTagsText }))}
+              />
+              <textarea
+                className="mt-3 w-full px-3 py-2 border rounded-lg min-h-[70px] font-mono text-xs bg-white"
+                value={masterForm.toleranceTagsText}
+                onChange={(e) => setMasterForm((prev) => ({ ...prev, toleranceTagsText: e.target.value }))}
+                onBlur={() =>
+                  setMasterForm((prev) => ({
+                    ...prev,
+                    toleranceTagsText: formatToleranceTags(normalizeToleranceTagsInput(prev.toleranceTagsText)),
+                  }))
+                }
+              />
               <div className="border-t border-slate-200 pt-4">
                 <label className="block text-xs text-slate-600 mb-1">В'язкість / viscosities</label>
                 <textarea
