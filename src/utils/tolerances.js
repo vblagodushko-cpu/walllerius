@@ -145,6 +145,29 @@ export function formatToleranceTags(tags) {
   return (Array.isArray(tags) ? tags : []).join(", ");
 }
 
+/** Системи з профілів усіх категорій товару, без повторів. Порожньо — категорії без профілю. */
+export function toleranceSystemsForCategories(categories) {
+  const preferred = [];
+  (Array.isArray(categories) ? categories : []).forEach((category) => {
+    const profile = TOLERANCE_FILTER_PROFILES[String(category || "").trim()];
+    if (!profile) return;
+    profile.forEach((id) => {
+      if (!preferred.includes(id)) preferred.push(id);
+    });
+  });
+  return preferred;
+}
+
+/** Категорія для кнопок VW: оливи і антифриз не змішуємо. */
+export function toleranceChoiceCategory(categories) {
+  const names = (Array.isArray(categories) ? categories : []).map((category) => String(category || "").trim());
+  const coolant = names.some((name) => COOLANT_CATEGORIES.has(name));
+  const oil = names.some((name) => OIL_CATEGORIES.has(name));
+  if (coolant && !oil) return "Охолоджуючі рідини";
+  if (oil && !coolant) return names.find((name) => OIL_CATEGORIES.has(name)) || "";
+  return "";
+}
+
 export function toleranceGroupsFromTags(tags) {
   return Array.from(
     new Set(
